@@ -1425,17 +1425,73 @@ pub struct BackupInfo {
     pub protected: bool,
     /// 이전 형식(.db 단일 파일) — 목록에만 보이고 복원은 안 됨
     pub legacy: bool,
+    pub encrypted: bool,
+    /// none · dpapi · password
+    pub encryption: String,
+    pub encryption_label: String,
+    /// 실제 저장 폴더
+    pub location: String,
+    /// 지정 경로 실패로 기본 경로에 대체 저장됨
+    pub fallback: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirCheck {
+    pub path: String,
+    pub exists: bool,
+    pub writable: bool,
+    pub free_bytes: Option<u64>,
+    pub ok: bool,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupList {
     pub dir: String,
+    pub default_dir: String,
+    pub custom_dir: Option<String>,
+    pub dir_check: DirCheck,
     pub backups: Vec<BackupInfo>,
     pub failed: Vec<BackupInfo>,
     pub last_backup_at: Option<String>,
     pub auto_enabled: bool,
     pub keep: i64,
+    /// 자동·기본 암호화 방식: none · dpapi
+    pub encryption: String,
+    pub fallback_enabled: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupSettingsInput {
+    pub auto_enabled: bool,
+    pub keep: i64,
+    pub custom_dir: Option<String>,
+    pub encryption: String,
+    pub fallback_enabled: bool,
+}
+
+/// 월 확정 뒤 변경 판정 (지문 비교).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonthChanges {
+    pub fiscal_month_id: i64,
+    pub status: String,
+    /// 마지막 확정 시각
+    pub closed_at: Option<String>,
+    /// 마지막 확정에 지문이 있는가 (없으면 옛 확정 — 시각 비교)
+    pub has_fingerprint: bool,
+    pub changed: bool,
+    /// 확정 뒤 새로 들어온 거래
+    pub new_entry_ids: Vec<i64>,
+    /// 확정 때 있었는데 상태(취소·대체·단계)가 바뀐 거래
+    pub changed_entry_ids: Vec<i64>,
+    /// 정정 상태가 바뀐 묶음 (id, 확정 때 상태, 지금 상태)
+    pub adjustment_changes: Vec<(i64, String, String)>,
+    pub allocation_changed: bool,
+    pub summary: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -39,6 +39,8 @@ fn setup() -> T {
     let item = |code: &str| cat.amount_items.iter().find(|f| f.code == code).unwrap().id;
     let coding = db.write(|tx| program::create(tx, y.id, "코딩")).unwrap();
     let stu = db.write(|tx| student::upsert(tx, y.id, &StudentKey { grade: Some(3), class_name: "가람".into(), student_no: "3".into(), name: "가명A".into() })).unwrap().unwrap();
+    // P5 시험은 비암호화 zip 기준. 암호화는 P6 시험(p6_*)에서 따로 본다.
+    db.write(|tx| crate::repo::setting::set(tx, "backup.encrypt", "none")).unwrap();
     T { _dir: dir, data_dir, db, year_id: y.id, months, ben: fund("beneficiary"), g3x: fund("g3_excess"), voucher: fund("after_voucher"), free: fund("free_voucher"), instr: item("instructor"), textbook: item("textbook"), material: item("material"), tm: item("textbook_material"), coding, stu }
 }
 
@@ -139,17 +141,17 @@ fn a_backup_package_is_consistent_verified_and_includes_originals() {
     assert_eq!(info.file_count, 2, "DB + 원본 1개");
     assert!(Path::new(&info.path).exists());
     assert!(info.file_name.starts_with("방과후회계백업_") && info.file_name.ends_with(".zip"));
-    let m = backup::read_manifest(Path::new(&info.path)).unwrap();
+    let m = backup::read_manifest(Path::new(&info.path), &t.data_dir, None).unwrap();
     assert_eq!(m.counts, before, "메타데이터 건수 = 백업 시점 건수");
     assert!(m.files.iter().any(|x| x.path == format!("uploads/{}", f.stored_name)));
     assert_eq!(m.schema_version, crate::db::migrate::latest_version());
-    let v = backup::verify(Path::new(&info.path)).unwrap();
+    let v = backup::verify(Path::new(&info.path), &t.data_dir).unwrap();
     assert!(v.ok && v.errors.is_empty());
     // 시나리오 4: 백업 뒤 새 거래가 들어와도 백업은 백업 시점 그대로 (스냅샷)
     t.collect(3, t.ben, t.instr, 10_000);
-    let v2 = backup::verify(Path::new(&info.path)).unwrap();
+    let v2 = backup::verify(Path::new(&info.path), &t.data_dir).unwrap();
     assert!(v2.ok);
-    assert_eq!(backup::read_manifest(Path::new(&info.path)).unwrap().counts.ledger_entries, before.ledger_entries);
+    assert_eq!(backup::read_manifest(Path::new(&info.path), &t.data_dir, None).unwrap().counts.ledger_entries, before.ledger_entries);
     // 목록·이력
     let dd = t.data_dir.clone();
     let l = t.db.read(|c| backup::list(c, &dd)).unwrap();
@@ -166,11 +168,11 @@ fn a_corrupted_backup_is_detected_and_listed_as_failed() {
     seed_scenario(&t);
     let info = t.backup("manual");
     corrupt_zip(Path::new(&info.path));
-    let v = backup::verify(Path::new(&info.path)).unwrap();
+    let v = backup::verify(Path::new(&info.path), &t.data_dir).unwrap();
     assert!(!v.ok, "5. 손상 감지");
     assert!(v.errors.iter().any(|e| e.contains("체크섬") || e.contains("구조") || e.contains("읽는 중")), "{:?}", v.errors);
     // 곁 파일은 생성 당시 '검증됨' 이지만 다시 검증하면 실패 → 복원 미리보기가 막는다
-    let pv = restore::inspect(&t.db, Path::new(&info.path)).unwrap();
+    let pv = restore::inspect(&t.db, Path::new(&info.path), None).unwrap();
     assert!(!pv.can_restore);
     assert!(pv.blocked.iter().any(|b| b.contains("검증 실패")));
     // 7. 마이그레이션 직전 백업: v7 로 만든 파일 DB 를 열면 패키지가 생긴다
@@ -198,7 +200,7 @@ fn a_retention_keeps_recent_autos_and_never_deletes_protected() {
     for _ in 0..4 {
         t.backup("auto");
     }
-    let removed = backup::cleanup(&t.data_dir, 2).unwrap();
+    let removed = backup::cleanup(&t.data_dir, &backup::default_dir(&t.data_dir), 2).unwrap();
     assert_eq!(removed.len(), 2);
     let dd = t.data_dir.clone();
     let l = t.db.read(|c| backup::list(c, &dd)).unwrap();
@@ -229,7 +231,7 @@ fn b_full_restore_round_trip_with_safety_backup_and_history() {
     let later = t.counts();
     assert!(later.ledger_entries > snapshot.ledger_entries);
     // 10. 미리보기
-    let pv = restore::inspect(&t.db, Path::new(&info.path)).unwrap();
+    let pv = restore::inspect(&t.db, Path::new(&info.path), None).unwrap();
     assert!(pv.can_restore, "{:?}", pv.blocked);
     assert_eq!(pv.current, later);
     assert_eq!(pv.backup.as_ref().unwrap(), &snapshot);
@@ -291,7 +293,7 @@ fn b_corrupted_and_incompatible_backups_are_blocked_and_db_untouched() {
     assert_eq!(t.hist("restore")[0].status, "blocked");
     // 12. 호환되지 않는 백업(미래 형식·미래 스키마) → 차단
     let info2 = t.backup("manual");
-    let m = backup::read_manifest(Path::new(&info2.path)).unwrap();
+    let m = backup::read_manifest(Path::new(&info2.path), &t.data_dir, None).unwrap();
     let fake = t.data_dir.join("backups").join("future.zip");
     {
         let f = std::fs::File::create(&fake).unwrap();
@@ -305,7 +307,7 @@ fn b_corrupted_and_incompatible_backups_are_blocked_and_db_untouched() {
         z.write_all(serde_json::to_string(&m2).unwrap().as_bytes()).unwrap();
         z.finish().unwrap();
     }
-    let pv = restore::inspect(&t.db, &fake).unwrap();
+    let pv = restore::inspect(&t.db, &fake, None).unwrap();
     assert!(!pv.can_restore);
     assert!(pv.blocked.iter().any(|b| b.contains("지원하지 않는 백업 형식")) || pv.blocked.iter().any(|b| b.contains("검증 실패")));
     assert!(restore::apply(&t.db, &fake, true).is_err());
@@ -326,7 +328,7 @@ fn b_failure_during_restore_keeps_existing_db_and_records_it() {
     // 시나리오 3: 파일 이동 뒤 · 복사 뒤(깨진 파일) · 검증 뒤 — 세 지점 모두 기존 DB 유지
     for point in ["after_move", "after_copy", "after_verify"] {
         let before = t.counts();
-        let r = restore::apply_inner(&t.db, Path::new(&info.path), true, Some(point)).unwrap();
+        let r = restore::apply_inner(&t.db, Path::new(&info.path), true, Some(point), None).unwrap();
         assert!(!r.ok, "{point}");
         assert!(r.message.contains("기존 자료를 그대로"), "{point}: {}", r.message);
         assert_eq!(t.counts(), before, "{point}: 기존 DB 유지");
@@ -517,4 +519,312 @@ fn ops_history_survives_restore() {
     assert_eq!(h[0].kind, "restore");
     // params 사용 (경고 방지)
     let _ = params![1];
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// P6 — 암호화(1~8) · 백업 경로(9~15) · 월 확정 지문(16~20) · PC 이전(31~35) · 마이그레이션(25)
+// ══════════════════════════════════════════════════════════════════════════
+
+fn set(t: &T, key: &str, value: &str) {
+    t.db.write(|tx| crate::repo::setting::set(tx, key, value)).unwrap();
+}
+
+fn file_contains(path: &Path, needle: &str) -> bool {
+    std::fs::read(path).map(|b| String::from_utf8_lossy(&b).contains(needle)).unwrap_or(false)
+}
+
+#[test]
+fn p6_a_password_backup_round_trip_wrong_password_and_no_leaks() {
+    let t = setup();
+    seed_scenario(&t);
+    let f = t.upload_fixture();
+    let pw = "교직원-이전용-2026!";
+    // 3. 비밀번호 암호화 백업
+    let dd = t.data_dir.clone();
+    let info = t.db.read(|c| backup::create_with_password(c, &dd, "manual", "PC 이전용", Some(pw))).unwrap();
+    assert!(info.file_name.ends_with(".asbk") && info.encrypted && info.encryption == "password" && info.verified, "{:?}", info);
+    assert!(info.complete && info.file_count == 2);
+    let bytes = std::fs::read(&info.path).unwrap();
+    assert!(crate::ops::crypto::is_encrypted_file(&bytes));
+    assert!(!String::from_utf8_lossy(&bytes).contains("manifest.json"), "zip 구조가 밖에서 보이지 않는다");
+    assert!(!String::from_utf8_lossy(&bytes).contains("가명A"), "학생 이름이 평문으로 없다");
+    // 8. 비밀번호·키가 어디에도 기록되지 않는다
+    for p in [PathBuf::from(format!("{}.meta.json", info.path)), PathBuf::from(format!("{}.verify.json", info.path)), history::file_path(&t.data_dir)] {
+        assert!(!file_contains(&p, pw), "{}", p.display());
+    }
+    assert!(!file_contains(&t.data_dir.join("asaccounting.db"), pw));
+    // 목록: meta 로 건수가 보인다 (복호화 없이)
+    let l = t.db.read(|c| backup::list(c, &dd)).unwrap();
+    let b = l.backups.iter().find(|b| b.file_name == info.file_name).unwrap();
+    assert_eq!((b.encryption.as_str(), b.counts.as_ref().map(|c| c.uploads)), ("password", Some(1)));
+    // 5. 잘못된 비밀번호 → 검증 실패·복원 차단 (메시지에 비밀번호 없음)
+    let v = backup::verify_with(Path::new(&info.path), &dd, Some("틀린비밀번호!!")).unwrap();
+    assert!(!v.ok && v.errors.iter().any(|e| e.contains("비밀번호가 틀리거나")));
+    let pv = restore::inspect(&t.db, Path::new(&info.path), Some("틀린비밀번호!!")).unwrap();
+    assert!(!pv.can_restore);
+    let pv0 = restore::inspect(&t.db, Path::new(&info.path), None).unwrap();
+    assert!(!pv0.can_restore && pv0.blocked.iter().any(|b| b.contains("비밀번호를 입력")));
+    let before = t.counts();
+    assert!(restore::apply_with_password(&t.db, Path::new(&info.path), true, Some("틀린비밀번호!!")).is_err());
+    assert_eq!(t.counts(), before);
+    // 4. 올바른 비밀번호로 복원
+    t.collect(3, t.ben, t.instr, 50_000);
+    let r = restore::apply_with_password(&t.db, Path::new(&info.path), true, Some(pw)).unwrap();
+    assert!(r.ok, "{}", r.message);
+    assert_eq!(t.counts().ledger_entries, before.ledger_entries);
+    assert!(crate::repo::upload::uploads_dir(&t.data_dir).join(&f.stored_name).is_file());
+    // 6. 손상된 암호화 파일
+    corrupt_zip(Path::new(&info.path));
+    let v = backup::verify_with(Path::new(&info.path), &dd, Some(pw)).unwrap();
+    assert!(!v.ok);
+    assert!(restore::apply_with_password(&t.db, Path::new(&info.path), true, Some(pw)).is_err());
+    // 7. 옛 zip 백업 호환 — 읽히지만 '암호화되지 않았습니다'
+    set(&t, "backup.encrypt", "none");
+    let z = t.backup("manual");
+    assert!(z.file_name.ends_with(".zip") && !z.encrypted);
+    let pv = restore::inspect(&t.db, Path::new(&z.path), None).unwrap();
+    assert!(pv.can_restore);
+    assert!(pv.warnings.iter().any(|w| w.contains("암호화되지 않았습니다")));
+    // 임시 파일이 남지 않는다
+    let leftovers: Vec<String> = std::fs::read_dir(&t.data_dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| n.starts_with(".backup-") || n.starts_with(".restore-")).collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+#[cfg(windows)]
+#[test]
+fn p6_a_dpapi_backup_is_default_for_auto_and_restores_without_password() {
+    let t = setup();
+    seed_scenario(&t);
+    set(&t, "backup.encrypt", "dpapi");
+    let dd = t.data_dir.clone();
+    // 1. DPAPI 백업 (자동 백업 기본)
+    let info = t.db.read(|c| backup::auto_daily(c, &dd)).unwrap().expect("오늘 첫 자동 백업");
+    assert!(info.file_name.ends_with(".asbk") && info.encryption == "dpapi" && info.verified);
+    let m = backup::read_manifest(Path::new(&info.path), &dd, None).unwrap();
+    assert_eq!(m.kind, "auto");
+    // 2. DPAPI 복원 (비밀번호 없이)
+    t.collect(3, t.ben, t.instr, 10_000);
+    let before = t.counts();
+    let r = restore::apply_with_password(&t.db, Path::new(&info.path), true, None).unwrap();
+    assert!(r.ok);
+    assert_eq!(t.counts().ledger_entries, before.ledger_entries - 1);
+    // 마이그레이션 직전 백업도 설정(dpapi)을 따른다
+    assert!(t.db.read(|c| backup::auto_daily(c, &dd)).unwrap().is_none(), "하루 한 번");
+}
+
+#[test]
+fn p6_b_custom_backup_dir_fallback_and_failure_handling() {
+    let t = setup();
+    seed_scenario(&t);
+    let dd = t.data_dir.clone();
+    // 9. 기본 경로
+    let l = t.db.read(|c| backup::list(c, &dd)).unwrap();
+    assert!(l.custom_dir.is_none() && l.dir == backup::default_dir(&t.data_dir).display().to_string());
+    // 10·11. 사용자 지정 경로(다른 폴더 = 다른 드라이브·USB 흉내)
+    let other = tempfile::tempdir().unwrap();
+    set(&t, "backup.dir", &other.path().display().to_string());
+    let info = t.backup("manual");
+    assert_eq!(info.location, other.path().display().to_string());
+    assert!(!info.fallback && Path::new(&info.path).starts_with(other.path()));
+    let l = t.db.read(|c| backup::list(c, &dd)).unwrap();
+    assert_eq!(l.custom_dir.as_deref(), Some(other.path().display().to_string().as_str()));
+    assert!(l.dir_check.ok);
+    assert!(l.backups.iter().any(|b| b.file_name == info.file_name));
+    // 12. 경로 접근 실패 (USB 분리·네트워크 끊김 흉내) → 실패 기록 + 기본 경로 대체, 저장 위치 명시
+    let gone = other.path().join("없는폴더").join("backup");
+    set(&t, "backup.dir", &gone.display().to_string());
+    let chk = backup::check_dir(&gone, 0);
+    assert!(!chk.ok && !chk.exists);
+    let fb = t.backup("manual");
+    assert!(fb.fallback, "대체 백업 표시");
+    assert_eq!(fb.location, backup::default_dir(&t.data_dir).display().to_string());
+    let h = t.hist("backup");
+    assert!(h.iter().any(|r| r.status == "failed"), "지정 경로 실패가 기록된다");
+    assert!(h.iter().any(|r| r.summary.contains("대체 백업")));
+    // 15. 대체 백업 끔 → 오류
+    set(&t, "backup.fallback", "0");
+    let e = t.db.read(|c| backup::create(c, &dd, "manual", "x")).unwrap_err();
+    assert_eq!(e.code, "BACKUP_DIR");
+    set(&t, "backup.fallback", "1");
+    set(&t, "backup.dir", "");
+    // 13. 저장 공간 부족
+    let chk = backup::check_dir(other.path(), u64::MAX / 2);
+    assert!(!chk.ok && chk.message.contains("저장 공간이 부족"));
+    assert!(chk.free_bytes.is_some());
+    // 쓰기 권한 없음(폴더가 아니라 파일)
+    let file_as_dir = other.path().join("file.txt");
+    std::fs::write(&file_as_dir, b"x").unwrap();
+    assert!(!backup::check_dir(&file_as_dir, 0).ok);
+    // 14. 쓰기 중단 → 최종 파일·임시 파일 없음, 실패 기록
+    let dir = backup::default_dir(&t.data_dir);
+    let before: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+    let dd2 = dd.clone();
+    let err = t.db.read(|c| backup::create_opts(c, &dd2, "manual", "중단", &backup::CreateOpts { dir: dir.clone(), encryption: "none", password: None, fail_at: Some("after_zip") })).unwrap_err();
+    assert_eq!(err.code, "TEST_FAIL");
+    let after: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+    assert_eq!(before, after, "임시 파일도 최종 파일도 남지 않는다");
+    assert!(t.hist("backup")[0].status == "failed");
+    // 시작 때 임시 파일 정리
+    std::fs::create_dir_all(dir.join(".backup-stale")).unwrap();
+    std::fs::write(dir.join(".tmp-stale.zip"), b"x").unwrap();
+    let removed = backup::cleanup_temp(&[dir.clone()]);
+    assert_eq!(removed.len(), 2);
+}
+
+#[test]
+fn p6_c_month_close_fingerprint_detects_changes_regardless_of_time() {
+    let t = setup();
+    t.policy(600_000);
+    t.collect(2, t.ben, t.instr, 30_000);
+    t.collect(2, t.g3x, t.instr, 10_000);
+    t.confirm();
+    let m = t.m(2);
+    // 16. 같은 초에 확정과 변경
+    t.db.write(|tx| year::month_close(tx, m, "확정")).unwrap();
+    let id = t.collect(2, t.ben, t.instr, 5_000);
+    let ch = t.db.read(|c| year::month_changes(c, m)).unwrap();
+    assert!(ch.has_fingerprint && ch.changed);
+    assert_eq!(ch.new_entry_ids, vec![id]);
+    assert!(ch.summary.contains("새 거래 1건"));
+    let months = t.db.read(|c| year::months(c, t.year_id)).unwrap();
+    assert!(months.iter().find(|x| x.id == m).unwrap().changed_after_close, "시각이 같아도 지문으로 잡힌다");
+    // 17. 확정 직후 상태 변경(취소)도 잡힌다
+    t.db.write(|tx| ledger::void(tx, id, "input_error", "시험").map(|_| ())).unwrap();
+    let ch = t.db.read(|c| year::month_changes(c, m)).unwrap();
+    assert!(ch.changed && ch.new_entry_ids == vec![id]);
+    // 18. 재개 → 정상 정정 → 재확정하면 새 지문 기준으로 '변경 없음'
+    t.db.write(|tx| year::month_reopen(tx, m, "소급 처리")).unwrap();
+    let p = t.db.read(|c| voucher::retro_preview(c, t.year_id, &[t.stu], &[])).unwrap();
+    let rows: Vec<VoucherApplyRow> = p.proposals.iter().filter(|x| x.state == "normal").map(|x| VoucherApplyRow { student_id: x.student_id, fiscal_month_id: x.fiscal_month_id, program_id: x.program_id, amount_item_id: x.amount_item_id, from_fund_id: x.from_fund_id.unwrap(), amount: x.amount, confirmed: false }).collect();
+    t.db.write(|tx| voucher::apply(tx, &VoucherApplyInput { school_year_id: t.year_id, kind: "retro".into(), reason: "시험".into(), decided_on: None, processed_on: Some("2026-05-15".into()), status: "done".into(), rows, decisions: vec![] })).unwrap();
+    let ch = t.db.read(|c| year::month_changes(c, m)).unwrap();
+    assert_eq!(ch.status, "open");
+    assert!(ch.changed && !ch.adjustment_changes.is_empty(), "재개 중 변경은 마지막 확정 대비 변경으로 보인다");
+    t.db.write(|tx| year::month_close(tx, m, "재확정")).unwrap();
+    let ch = t.db.read(|c| year::month_changes(c, m)).unwrap();
+    assert!(!ch.changed);
+    assert!(!t.db.read(|c| year::months(c, t.year_id)).unwrap().iter().find(|x| x.id == m).unwrap().changed_after_close);
+    // 확정 상태에서 정정 상태 변경(취소)은 P3 가 막는다 → 지문도 그대로
+    let adj: i64 = t.db.read(|c| Ok(c.query_row("SELECT max(id) FROM adjustment", [], |r| r.get(0))?)).unwrap();
+    assert!(t.db.write(|tx| adjustment::cancel(tx, adj, "시험")).is_err());
+    assert!(!t.db.read(|c| year::month_changes(c, m)).unwrap().changed);
+    // 20. 기존 확정 이력 보존 (3건: 확정·재개·재확정, 첫 확정의 지문 그대로)
+    let rows: Vec<(String, String)> = t.db.read(|c| {
+        let mut st = c.prepare("SELECT action, fingerprint FROM month_close WHERE fiscal_month_id = ?1 ORDER BY id")?;
+        let v: Vec<(String, String)> = st.query_map([m], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?;
+        Ok(v)
+    }).unwrap();
+    assert_eq!(rows.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(), vec!["close", "reopen", "close"]);
+    assert!(!rows[0].1.is_empty() && rows[0].1 != rows[2].1);
+    // 19. 원본 파일 교체(여기서는 거래 취소로 흉내) → 변경 감지
+    let e2: i64 = t.db.read(|c| Ok(c.query_row("SELECT min(id) FROM ledger_entry WHERE fiscal_month_id = ?1 AND state = 'active' AND flow = 'collection'", [m], |r| r.get(0))?)).unwrap();
+    t.db.write(|tx| year::month_reopen(tx, m, "교체")).unwrap();
+    t.db.write(|tx| ledger::void(tx, e2, "input_error", "교체 흉내").map(|_| ())).unwrap();
+    let ch = t.db.read(|c| year::month_changes(c, m)).unwrap();
+    assert!(ch.changed_entry_ids.contains(&e2));
+    // 무결성 검사도 지문 기준으로 '확정 뒤 변경' 을 낸다 (시간 대기 없이)
+    t.db.write(|tx| year::month_close(tx, m, "재확정2")).unwrap();
+    t.collect(2, t.ben, t.instr, 1_000);
+    let dd = t.data_dir.clone();
+    let rep = t.db.read(|c| integrity::run(c, &dd, t.year_id)).unwrap();
+    assert!(rep.items.iter().any(|i| i.code == "closed_month"));
+}
+
+#[test]
+fn p6_d_v8_close_history_survives_v9_and_reads_as_legacy() {
+    use crate::db::migrate;
+    let mut c = rusqlite::Connection::open_in_memory().unwrap();
+    c.pragma_update(None, "foreign_keys", "ON").unwrap();
+    migrate::run_up_to(&mut c, 8).unwrap();
+    let y = year::create(&c, 2026).unwrap();
+    let m: i64 = c.query_row("SELECT id FROM fiscal_month WHERE school_year_id = ?1 AND seq = 1", [y.id], |r| r.get(0)).unwrap();
+    year::month_close(&c, m, "v8 확정").unwrap_or_else(|_| ());
+    // v8 에는 fingerprint 칸이 없으므로 직접 행을 넣는다
+    c.execute("DELETE FROM month_close", []).ok();
+    c.execute("INSERT INTO month_close (fiscal_month_id, action, totals_json, note) VALUES (?1, 'close', '{}', 'v8 확정')", [m]).unwrap();
+    c.execute("UPDATE fiscal_month SET status = 'closed' WHERE id = ?1", [m]).unwrap();
+    migrate::run(&mut c).unwrap();
+    assert_eq!(migrate::current_version(&c).unwrap(), 9);
+    let ch = year::month_changes(&c, m).unwrap();
+    assert!(!ch.has_fingerprint && !ch.changed && ch.summary.contains("옛 확정"));
+    let n: i64 = c.query_row("SELECT count(*) FROM month_close", [], |r| r.get(0)).unwrap();
+    assert_eq!(n, 1, "기존 확정 이력 보존");
+}
+
+#[test]
+fn p6_f_pc_migration_restore_password_backup_into_a_fresh_data_dir() {
+    // 31. 기존 PC: 암호화 백업
+    let a = setup();
+    let (batch, refund) = seed_scenario(&a);
+    let f = a.upload_fixture();
+    let pw = "다른PC로-옮기기-2026";
+    let dda = a.data_dir.clone();
+    let info = a.db.read(|c| backup::create_with_password(c, &dda, "manual", "PC 이전", Some(pw))).unwrap();
+    let src_counts = a.counts();
+    // 32. 별도 환경(빈 자료 폴더 + 새 DB) 에서 복원
+    let dir_b = tempfile::tempdir().unwrap();
+    let moved = dir_b.path().join(&info.file_name);
+    std::fs::copy(&info.path, &moved).unwrap();
+    let db_b = Db::open(&dir_b.path().join("asaccounting.db")).unwrap();
+    assert_eq!(db_b.read(backup::counts).unwrap().ledger_entries, 0);
+    let pv = restore::inspect(&db_b, &moved, Some(pw)).unwrap();
+    assert!(pv.can_restore, "{:?}", pv.blocked);
+    let r = restore::apply_with_password(&db_b, &moved, true, Some(pw)).unwrap();
+    assert!(r.ok, "{}", r.message);
+    let b_counts = db_b.read(backup::counts).unwrap();
+    assert_eq!((b_counts.ledger_entries, b_counts.adjustments, b_counts.voucher_targets, b_counts.uploads, b_counts.students), (src_counts.ledger_entries, src_counts.adjustments, src_counts.voucher_targets, src_counts.uploads, src_counts.students));
+    // 33. 원본 파일 · 34. 감사 이력 · 35. 자유수강권·환불
+    assert!(crate::repo::upload::uploads_dir(dir_b.path()).join(&f.stored_name).is_file());
+    assert_eq!(b_counts.audit_logs, src_counts.audit_logs + 1, "복원 감사 로그 한 줄");
+    let b2 = db_b.read(|c| voucher::batch_get(c, batch.id)).unwrap();
+    assert_eq!(b2.total_amount, batch.total_amount);
+    let rl = db_b.read(|c| voucher::refund_list(c, a.year_id)).unwrap();
+    assert_eq!(rl[0].status, "complete");
+    assert_eq!(db_b.read(|c| adjustment::get(c, refund.id)).unwrap().status, "done");
+    let dd_b = dir_b.path().to_path_buf();
+    let rep = db_b.read(|c| integrity::run(c, &dd_b, a.year_id)).unwrap();
+    assert_eq!(rep.error_count, 0);
+    // 복원 이력은 B 환경의 자료 폴더에 남는다
+    let h = history::list(dir_b.path(), 10).unwrap();
+    assert!(h.iter().any(|x| x.kind == "restore" && x.status == "ok"));
+}
+
+
+/// 만들어진 설치본의 .sig 를 tauri.conf.json 의 공개키로 직접 검증한다 (updater 와 같은 minisign 형식).
+/// 설치본이 있을 때만 돈다: `cargo test --lib p6_e_installer_signature -- --ignored`
+#[test]
+#[ignore]
+fn p6_e_installer_signature_verifies_with_public_key() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let conf: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(root.join("tauri.conf.json")).unwrap()).unwrap();
+    let pub_b64 = conf["plugins"]["updater"]["pubkey"].as_str().unwrap();
+    let endpoints = conf["plugins"]["updater"]["endpoints"].as_array().unwrap();
+    assert!(endpoints.iter().all(|e| e.as_str().unwrap().starts_with("https://")), "HTTPS 만");
+    assert!(conf["plugins"]["updater"]["dangerousInsecureTransportProtocol"].is_null());
+    use base64::Engine as _;
+    let pub_txt = String::from_utf8(base64::engine::general_purpose::STANDARD.decode(pub_b64).unwrap()).unwrap();
+    let pk = minisign_verify::PublicKey::decode(&pub_txt).unwrap();
+    let dir = root.join("target/release/bundle/nsis");
+    let exe = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).find(|p| p.to_string_lossy().ends_with("-setup.exe")).expect("설치본");
+    let sig_path = PathBuf::from(format!("{}.sig", exe.display()));
+    let sig_txt = String::from_utf8(base64::engine::general_purpose::STANDARD.decode(std::fs::read_to_string(&sig_path).unwrap().trim()).unwrap()).unwrap();
+    let sig = minisign_verify::Signature::decode(&sig_txt).unwrap();
+    let data = std::fs::read(&exe).unwrap();
+    pk.verify(&data, &sig, false).expect("서명 검증");
+    // 변조된 파일은 거부
+    let mut tampered = data.clone();
+    tampered[1000] ^= 0xFF;
+    assert!(pk.verify(&tampered, &sig, false).is_err());
+    // 설치본(NSIS 압축)과 실행 파일 안에 자료·키가 없다 (개인정보·개인키 문자열 검색). 업데이트 주소·공개키는 실행 파일에 들어 있다.
+    let app = std::fs::read(root.join("target/release/asaccounting.exe")).unwrap();
+    let priv_key = std::fs::read_to_string(std::path::Path::new(&std::env::var("USERPROFILE").unwrap()).join(".tauri/asaccounting.key")).unwrap();
+    let priv_line = priv_key.lines().last().unwrap().trim().to_string();
+    for bytes in [&data, &app] {
+        let text = String::from_utf8_lossy(bytes);
+        assert!(!text.contains(&priv_line), "개인키가 설치본·실행 파일에 없다");
+        assert!(!text.contains("가명A") && !text.contains(".sandbox") && !text.contains("asaccounting.db-wal"));
+    }
+    let app_text = String::from_utf8_lossy(&app);
+    assert!(app_text.contains("releases/latest/download/latest.json"), "업데이트 주소가 실행 파일에 들어 있다");
+    assert!(app_text.contains(pub_b64), "공개키가 실행 파일에 들어 있다");
 }

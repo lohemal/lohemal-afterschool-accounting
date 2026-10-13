@@ -1,0 +1,67 @@
+# 방과후 회계 검증 매니저 — Windows 설치본 · 업데이트 자산 Release
+#
+# 태그 v* 를 push 하면 (사용자 승인 뒤) NSIS 설치본을 만들고 서명해 GitHub Release 에 올린다.
+#   · 서명 개인 키는 저장소 밖(GitHub Secrets `TAURI_SIGNING_PRIVATE_KEY`). 비밀번호 없는 키라 PASSWORD 는 빈 문자열로 넘긴다
+#     (환경변수가 없으면 tauri 가 입력을 기다리다 .sig 만 빠진다 — 형제 프로젝트에서 겪은 함정).
+#   · 앱 이름이 한글이라 GitHub 이 첨부 파일명에서 한글을 떼어 낸다 → 영문 이름으로 복사하고 latest.json 을 직접 만든다 (BOM 없음).
+#   · 설치본에는 자료·백업·키가 들어가지 않는다 (.gitignore 로 저장소에도 없다).
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - name: Build (signed)
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" npx tauri build
+      - name: Collect assets (ASCII names) + latest.json
+        shell: pwsh
+        run: |
+          $ver = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          $tag = "v$ver"
+          if ("${{ github.ref_name }}" -ne $tag) { throw "태그 ${{ github.ref_name }} 과 tauri.conf.json 버전 $ver 이 다릅니다." }
+          $dir = "src-tauri/target/release/bundle/nsis"
+          $exe = Get-ChildItem $dir -Filter "*-setup.exe" | Select-Object -First 1
+          $sig = Get-ChildItem $dir -Filter "*-setup.exe.sig" | Select-Object -First 1
+          if (-not $exe -or -not $sig) { throw "설치본 또는 서명(.sig)이 없습니다." }
+          New-Item -ItemType Directory -Force out | Out-Null
+          $name = "asaccounting_${ver}_x64-setup.exe"
+          Copy-Item $exe.FullName "out/$name"
+          Copy-Item $sig.FullName "out/$name.sig"
+          $signature = (Get-Content $sig.FullName -Raw).Trim()
+          $url = "https://github.com/${{ github.repository }}/releases/download/$tag/$name"
+          $json = @{ version = $ver; notes = "방과후 회계 검증 매니저 $tag"; pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"); platforms = @{ "windows-x86_64" = @{ signature = $signature; url = $url } } } | ConvertTo-Json -Depth 5
+          [System.IO.File]::WriteAllText("out/latest.json", $json, (New-Object System.Text.UTF8Encoding $false))
+          $hash = (Get-FileHash "out/$name" -Algorithm SHA256).Hash.ToLower()
+          [System.IO.File]::WriteAllText("out/SHA256SUMS.txt", "$hash  $name`n", (New-Object System.Text.UTF8Encoding $false))
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            out/*.exe
+            out/*.sig
+            out/latest.json
+            out/SHA256SUMS.txt
+          body: |
+            ## 설치
+            `asaccounting_<버전>_x64-setup.exe` 를 내려받아 실행합니다 (현재 사용자 설치, 관리자 권한 불필요).
+            기존 설치 위에 설치해도 회계 자료(`%APPDATA%\kr.school.asaccounting`)는 그대로 유지됩니다.
+            앱 안의 **설정 → 업데이트**에서도 받을 수 있으며, 설치 전에 자료를 자동 백업합니다.

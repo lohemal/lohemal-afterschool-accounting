@@ -30,6 +30,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             // 개발·시험용: 환경변수가 있으면 실사용 자료 폴더 대신 그 폴더를 쓴다 (연습용 DB).
             let dir = match std::env::var("ASACCOUNTING_DATA_DIR") {
@@ -53,6 +55,14 @@ pub fn run() {
             // 반영 도중 앱이 꺼져 DB 에 없는 보관 파일이 남았으면 치운다.
             if let Err(e) = db.read(|c| repo::upload::cleanup_orphans(c, &dir)) {
                 log::warn!("보관 파일 정리 실패(계속 진행): {}", e.message);
+            }
+            // 비정상 종료로 남은 임시 파일 정리 (자료 폴더·백업 폴더)
+            {
+                let bdir = db.read(|c| ops::backup::resolve_dir(c, &dir)).map(|x| x.0).unwrap_or_else(|_| ops::backup::default_dir(&dir));
+                let removed = ops::backup::cleanup_temp(&[dir.clone(), bdir, ops::backup::default_dir(&dir)]);
+                if !removed.is_empty() {
+                    log::info!("임시 파일 {}개 정리", removed.len());
+                }
             }
             // 정기 자동 백업 — 하루 한 번, 프로그램 시작 때. 실패해도 앱은 뜬다 (작업 이력에 남는다).
             match db.read(|c| ops::backup::auto_daily(c, &dir)) {
@@ -135,8 +145,11 @@ pub fn run() {
             commands::voucher::after_voucher_target_save,
             commands::ops::backup_list,
             commands::ops::backup_create,
+            commands::ops::backup_before_update,
             commands::ops::backup_settings_set,
+            commands::ops::backup_dir_check,
             commands::ops::backup_verify,
+            commands::ops::month_changes,
             commands::ops::restore_inspect,
             commands::ops::restore_apply,
             commands::ops::integrity_run,

@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { check, type Update } from '@tauri-apps/plugin-updater'
 import { useState } from 'react'
 
 import { FundAliasAdmin, ProgramAdmin } from '@/components/ProgramAdmin'
@@ -117,6 +118,7 @@ export function SettingsPage() {
       {year && <ProgramAdmin yearId={year.id} />}
       <FundAliasAdmin />
 
+      <UpdateCard />
       <Card title="자료 위치">
         <div className="row">
           <span className="label">DB 파일</span>
@@ -134,7 +136,7 @@ export function SettingsPage() {
           </Button>
         </div>
         <p className="muted" style={{ margin: '10px 0 0' }}>
-          모든 자료는 이 컴퓨터의 SQLite 파일에만 저장되며 외부로 전송되지 않습니다. 올린 엑셀 원본은 자료 폴더의 uploads/ 에 보관됩니다. DB 백업·복원은 다음 단계에 붙습니다.
+          모든 자료는 이 컴퓨터의 SQLite 파일에만 저장되며 외부로 전송되지 않습니다. 올린 엑셀 원본은 자료 폴더의 uploads/ 에 보관됩니다. 백업·복원은 데이터 관리에서 합니다. 프로그램을 제거해도 이 폴더는 지워지지 않습니다.
         </p>
       </Card>
     </Page>
@@ -221,5 +223,76 @@ function CatalogEditor({
         </Button>
       </div>
     </>
+  )
+}
+
+/* ── 업데이트 (Tauri updater · 서명 검증 필수) ────────────────── */
+
+function UpdateCard() {
+  const { boot } = useApp()
+  const toast = useToast()
+  const [state, setState] = useState<'idle' | 'checking' | 'none' | 'available' | 'backing' | 'downloading' | 'installing' | 'error'>('idle')
+  const [update, setUpdate] = useState<Update | null>(null)
+  const [progress, setProgress] = useState<{ done: number; total: number | null }>({ done: 0, total: null })
+  const [error, setError] = useState('')
+  async function checkNow() {
+    setState('checking')
+    setError('')
+    try {
+      const u = await check({ timeout: 15000 })
+      if (u) {
+        setUpdate(u)
+        setState('available')
+      } else {
+        setUpdate(null)
+        setState('none')
+      }
+    } catch (e) {
+      setError(errorMessage(e))
+      setState('error')
+    }
+  }
+  async function install() {
+    if (!update) return
+    try {
+      setState('backing')
+      await api.backupBeforeUpdate(update.version)
+      setState('downloading')
+      let done = 0
+      await update.downloadAndInstall((ev) => {
+        if (ev.event === 'Started') setProgress({ done: 0, total: ev.data.contentLength ?? null })
+        else if (ev.event === 'Progress') {
+          done += ev.data.chunkLength
+          setProgress((p) => ({ ...p, done }))
+        } else if (ev.event === 'Finished') setState('installing')
+      })
+      // Windows: 설치 프로그램이 앱을 끝내고 다시 켠다. 여기서 relaunch() 를 부르면 설치와 경쟁해 실패한다.
+      setState('installing')
+    } catch (e) {
+      setError(errorMessage(e))
+      setState('error')
+      toast.show(`업데이트 실패: ${errorMessage(e)} — 기존 버전과 자료는 그대로입니다.`, true)
+    }
+  }
+  return (
+    <Card title="업데이트" right={<span className="muted">현재 버전 v{boot.app.version}</span>}>
+      <div className="row">
+        <Button variant="primary" disabled={state === 'checking' || state === 'backing' || state === 'downloading' || state === 'installing'} onClick={checkNow}>{state === 'checking' ? '확인 중…' : '업데이트 확인'}</Button>
+        {state === 'none' && <span className="badge badge--ok">최신 버전입니다</span>}
+        {state === 'error' && <span className="muted">확인하지 못했습니다: {error}</span>}
+      </div>
+      {update && (state === 'available' || state === 'backing' || state === 'downloading' || state === 'installing') && (
+        <div className="notice" style={{ display: 'block', marginTop: 8 }}>
+          <strong>새 버전 v{update.version}</strong> <span className="muted">(현재 v{boot.app.version}{update.date ? ` · 배포 ${update.date}` : ''})</span>
+          {update.body && <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit', margin: '6px 0' }}>{update.body}</pre>}
+          <p className="muted" style={{ margin: '6px 0' }}>설치하기 전에 현재 자료를 자동으로 백업합니다(업데이트 직전 백업). 설치 파일은 서명을 검증한 뒤에만 적용되며, 설치가 끝나면 프로그램이 다시 시작됩니다. 자료는 그대로 유지됩니다.</p>
+          {state === 'available' && <Button variant="primary" onClick={install}>백업 후 업데이트 설치</Button>}
+          {state === 'backing' && <span className="muted">업데이트 직전 백업 중…</span>}
+          {state === 'downloading' && <span className="muted">내려받는 중… {progress.total ? `${Math.round((progress.done / progress.total) * 100)}%` : `${Math.round(progress.done / 1024)} KB`}</span>}
+          {state === 'installing' && <span className="muted">설치 중… 프로그램이 곧 다시 시작됩니다.</span>}
+        </div>
+      )}
+      <p className="muted" style={{ marginBottom: 0 }}>업데이트는 공식 배포 주소(HTTPS)에서 받고, 서명이 맞지 않으면 설치하지 않습니다.</p>
+    </Card>
   )
 }

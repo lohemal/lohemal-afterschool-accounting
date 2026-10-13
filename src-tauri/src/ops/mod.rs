@@ -3,6 +3,7 @@
 //! 작업 이력(`ops-history.jsonl`)은 DB 밖 파일이다. 과거 DB 를 복원해도 복원 작업 자체의 기록은 남는다.
 
 pub mod backup;
+pub mod crypto;
 pub mod export;
 pub mod history;
 pub mod restore;

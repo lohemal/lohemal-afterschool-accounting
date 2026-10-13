@@ -10,11 +10,11 @@ Windows 로컬 데스크톱 프로그램입니다. 모든 차액을 자동으로
 
 ## 현재 단계
 
-**P5 — 운영 안정화(백업·복원 · 무결성 검사 · 이용권 대상 여부 · 합산 중복 방지 · 학기 공백 확인 · Excel 내보내기) 완료.** 규칙은 [docs/06-P5-운영.md](docs/06-P5-운영.md). 자유수강권 규칙은 [docs/05-P4-자유수강권.md](docs/05-P4-자유수강권.md) (10장이 P4.1).
+**P6 — 배포 준비(백업 암호화 · 사용자 지정 백업 경로 · 월 확정 지문 · NSIS 설치본 · 서명 업데이트) 완료, v0.1.0.** 배포·자료 위치는 [docs/07-P6-배포준비.md](docs/07-P6-배포준비.md), 운영 규칙은 [docs/06-P5-운영.md](docs/06-P5-운영.md). 자유수강권 규칙은 [docs/05-P4-자유수강권.md](docs/05-P4-자유수강권.md) (10장이 P4.1).
 정정 규칙은 [docs/04-P3-회계-정정.md](docs/04-P3-회계-정정.md), 설계와 DB 구조는 [docs/01-P0-설계.md](docs/01-P0-설계.md),
 업로드·되돌리기 규칙은 [docs/02-P1-업로드와-되돌리기.md](docs/02-P1-업로드와-되돌리기.md),
 배분·대조 규칙과 실제 9월 검증 결과는 [docs/03-P2-대조와-배분.md](docs/03-P2-대조와-배분.md) 를 보세요.
-다음 단계(P6 배포·업데이트)는 사용자 확인 후 시작합니다.
+외부 배포(저장소 공개·push·Release)는 사용자 승인 후 진행합니다.
 
 ## 실행·검사
 
@@ -25,7 +25,7 @@ npm run app:sandbox  # 연습용 자료 폴더(.sandbox/)로 실행 — 실사�
 npm run check        # tsc + vitest + cargo test
 # 실제 9월 파일 대조(로컬 전용): ASACCOUNTING_REAL_DIR="..." cargo test --lib real_ -- --ignored --nocapture
 py -I scripts/make-fixtures.py   # 가명 시험 엑셀 다시 만들기 (test/fixtures)
-npm run app:build    # NSIS 설치본
+npm run app:build    # NSIS 설치본 (서명하려면 TAURI_SIGNING_PRIVATE_KEY=<개인키 내용> TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" 환경변수)
 ```
 
 ## 개인정보 규칙

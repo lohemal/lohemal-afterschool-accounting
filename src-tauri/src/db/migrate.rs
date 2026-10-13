@@ -80,6 +80,13 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../migrations/008_ops.sql"),
         fk_off: false,
     },
+    // 월 확정 지문 칸. 기존 확정 이력 보존.
+    Migration {
+        version: 9,
+        name: "009_close_fingerprint",
+        sql: include_str!("../../migrations/009_close_fingerprint.sql"),
+        fk_off: false,
+    },
 ];
 
 pub fn latest_version() -> i32 {
@@ -183,7 +190,13 @@ fn backup_before_migrate(conn: &Connection, from: i32) -> AppResult<Option<Strin
     }
     let db_path = std::path::Path::new(&path);
     let data_dir = db_path.parent().ok_or_else(|| AppError::new("IO", "자료 폴더를 찾지 못했습니다."))?;
-    let info = crate::ops::backup::create(conn, data_dir, "migration", &format!("스키마 v{from} → v{} 마이그레이션 직전", latest_version()))?;
+    // 설정 표가 있으면 설정대로(지정 경로·암호화), 없으면 기본 폴더에 암호화 없이.
+    let has_setting: i64 = conn.query_row("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'app_setting'", [], |r| r.get(0)).unwrap_or(0);
+    let info = if has_setting > 0 {
+        crate::ops::backup::create(conn, data_dir, "migration", &format!("스키마 v{from} → v{} 마이그레이션 직전", latest_version()))?
+    } else {
+        crate::ops::backup::create_opts(conn, data_dir, "migration", &format!("스키마 v{from} → v{} 마이그레이션 직전", latest_version()), &crate::ops::backup::CreateOpts { dir: crate::ops::backup::default_dir(data_dir), encryption: "none", password: None, fail_at: None })?
+    };
     Ok(Some(info.file_name))
 }
 

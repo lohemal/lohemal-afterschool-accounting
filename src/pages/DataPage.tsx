@@ -8,7 +8,7 @@ import { api, errorMessage } from '@/ipc/api'
 import { bytes, shortDateTime, won } from '@/lib/format'
 import { currentYm } from '@/lib/months'
 import { useApp } from '@/lib/useApp'
-import type { BackupInfo, DbCounts, IntegrityReport, RestorePreview, RestoreResult } from '@/ipc/types'
+import type { BackupInfo, DbCounts, DirCheck, IntegrityReport, RestorePreview, RestoreResult } from '@/ipc/types'
 
 type Tab = 'backup' | 'restore' | 'integrity' | 'export' | 'history'
 
@@ -79,18 +79,34 @@ function Backup() {
   const [busy, setBusy] = useState(false)
   const [auto, setAuto] = useState(true)
   const [keep, setKeep] = useState(10)
+  const [customDir, setCustomDir] = useState('')
+  const [encryption, setEncryption] = useState<'none' | 'dpapi'>('dpapi')
+  const [fallback, setFallback] = useState(true)
+  const [dirCheck, setDirCheck] = useState<DirCheck | null>(null)
+  const [forMove, setForMove] = useState(false)
+  const [pw, setPw] = useState('')
+  const [pw2, setPw2] = useState('')
   useEffect(() => {
     if (list.data) {
       setAuto(list.data.autoEnabled)
       setKeep(list.data.keep)
+      setCustomDir(list.data.customDir ?? '')
+      setEncryption(list.data.encryption)
+      setFallback(list.data.fallbackEnabled)
     }
   }, [list.data])
   async function create() {
+    if (forMove && (pw.length < 8 || pw !== pw2)) {
+      toast.show('비밀번호는 8자 이상이고 두 번 같게 입력해야 합니다.', true)
+      return
+    }
     setBusy(true)
     try {
-      const b = await api.backupCreate(note)
-      toast.show(`백업을 만들고 검증했습니다: ${b.fileName}`)
+      const b = await api.backupCreate(note, forMove ? pw : null)
+      toast.show(`${b.fallback ? '지정 경로를 쓸 수 없어 기본 경로에 ' : ''}백업을 만들고 검증했습니다: ${b.fileName} (${b.encryptionLabel})`, b.fallback)
       setNote('')
+      setPw('')
+      setPw2('')
       await qc.invalidateQueries({ queryKey: ['backups'] })
       await qc.invalidateQueries({ queryKey: ['opsHistory'] })
     } catch (e) {
@@ -99,10 +115,20 @@ function Backup() {
       setBusy(false)
     }
   }
+  async function pickDir() {
+    const p = await open({ directory: true, multiple: false })
+    if (typeof p === 'string') {
+      setCustomDir(p)
+      setDirCheck(await api.backupDirCheck(p))
+    }
+  }
+  async function checkDir() {
+    setDirCheck(await api.backupDirCheck(customDir))
+  }
   async function saveSettings() {
     try {
-      await api.backupSettingsSet(auto, keep)
-      toast.show('자동 백업 설정을 저장했습니다.')
+      await api.backupSettingsSet({ autoEnabled: auto, keep, customDir: customDir || null, encryption, fallbackEnabled: fallback })
+      toast.show('백업 설정을 저장했습니다.')
       await qc.invalidateQueries({ queryKey: ['backups'] })
     } catch (e) {
       toast.show(errorMessage(e), true)
@@ -117,25 +143,49 @@ function Backup() {
       <td className="num">{bytes(b.size)}</td>
       <td>v{b.schemaVersion || '?'} · {b.appVersion || '?'}</td>
       <td className="center">{b.verified ? <span className="badge badge--ok">검증됨</span> : <span className="badge badge--bad">{b.legacy ? '이전 형식' : '검증 실패'}</span>}{!b.complete && b.verified && <span className="badge badge--soon" style={{ marginLeft: 4 }}>원본 일부 없음</span>}</td>
+      <td className="center">{b.encrypted ? <span className={b.encryption === 'password' ? 'badge badge--navy' : 'badge badge--ok'}>{b.encryptionLabel}</span> : <span className="badge badge--bad">암호화 안 됨</span>}</td>
+      <td className="wrap" style={{ fontSize: 12 }}>{b.location}{b.fallback ? ' (대체 저장)' : ''}</td>
       <td className="wrap" style={{ fontSize: 12 }}>{b.counts ? `원장 ${won(b.counts.ledgerEntries)}건 · 정정 ${won(b.counts.adjustments)}건 · 대상자 ${won(b.counts.voucherTargets)}명` : b.verifyErrors.join(' / ')}</td>
     </tr>
   )
   return (
     <>
-      <Card title="수동 백업" right={d ? <span className="muted">최근 백업: {d.lastBackupAt ?? '없음'} · 폴더 {d.dir}</span> : undefined}>
+      <Card title="수동 백업" right={d ? <span className="muted">최근 백업: {d.lastBackupAt ?? '없음'} · 현재 백업 경로 {d.dir}{d.customDir ? ' (사용자 지정)' : ' (기본)'}</span> : undefined}>
         <div className="row">
           <label className="field" style={{ flex: 1 }}><span>메모 (선택)</span><input className="input" value={note} onChange={(e) => setNote(e.target.value)} placeholder="예: 9월 정산 전" /></label>
+          <label className="row" style={{ alignSelf: 'flex-end', height: 'var(--h-control, 28px)' }}><input type="checkbox" checked={forMove} onChange={(e) => setForMove(e.target.checked)} /> 다른 PC 이전용 (비밀번호 암호화)</label>
           <Button variant="primary" disabled={busy} onClick={create} style={{ alignSelf: 'flex-end' }}>{busy ? '백업 중…' : '지금 백업'}</Button>
         </div>
-        <p className="muted" style={{ marginBottom: 0 }}>실행 중인 DB 를 복사하지 않고 SQLite 백업 API 로 일관된 스냅샷을 뜬 뒤, 보관 중인 원본 엑셀과 함께 하나의 zip 으로 묶고 체크섬·무결성·메타데이터를 검증합니다. 검증을 통과한 백업만 아래 목록에 보입니다.</p>
+        {forMove && (
+          <div className="row" style={{ marginTop: 8 }}>
+            <label className="field"><span>백업 비밀번호 (8자 이상)</span><input className="input" type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="new-password" /></label>
+            <label className="field"><span>비밀번호 확인</span><input className="input" type="password" value={pw2} onChange={(e) => setPw2(e.target.value)} autoComplete="new-password" /></label>
+            <span className="muted" style={{ alignSelf: 'flex-end' }}>비밀번호는 어디에도 저장되지 않습니다. 잊으면 이 백업은 복원할 수 없습니다.</span>
+          </div>
+        )}
+        <p className="muted" style={{ marginBottom: 0 }}>실행 중인 DB 를 복사하지 않고 SQLite 백업 API 로 일관된 스냅샷을 뜬 뒤, 보관 중인 원본 엑셀과 함께 패키지로 묶어 암호화(기본: 현재 Windows 계정용)하고 체크섬·무결성·메타데이터를 검증합니다. 임시 파일로 만들어 검증을 통과해야 최종 파일이 되며, 검증을 통과한 백업만 아래 목록에 보입니다. 현재 계정용 백업은 다른 PC·다른 Windows 계정에서 풀 수 없으니 PC 를 옮길 때는 '다른 PC 이전용'으로 만드세요.</p>
       </Card>
-      <Card title="자동 백업 설정">
+      <Card title="백업 설정 (자동 백업 · 암호화 · 백업 경로)">
         <div className="row">
           <label className="row"><input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} /> 프로그램을 시작할 때 하루 한 번 자동 백업</label>
           <label className="field"><span>자동 백업 보관 개수</span><input className="input" type="number" min={1} max={100} value={keep} onChange={(e) => setKeep(Number(e.target.value))} style={{ width: 90 }} /></label>
-          <Button onClick={saveSettings} style={{ alignSelf: 'flex-end' }}>설정 저장</Button>
+          <label className="field"><span>백업 암호화</span>
+            <select className="select" value={encryption} onChange={(e) => setEncryption(e.target.value as 'none' | 'dpapi')}>
+              <option value="dpapi">현재 Windows 계정용 암호화 (권장)</option>
+              <option value="none">암호화 안 함 (권장하지 않음)</option>
+            </select>
+          </label>
         </div>
-        <p className="muted" style={{ marginBottom: 0 }}>자동 백업은 최근 N개만 남기고 정리합니다. 수동 백업·마이그레이션 직전 백업·복원 직전 안전 백업은 자동으로 지우지 않습니다. 정리 내역은 작업 이력에 남습니다.</p>
+        <div className="row" style={{ marginTop: 8 }}>
+          <label className="field" style={{ flex: 1 }}><span>사용자 지정 백업 경로 (비우면 기본: {d?.defaultDir})</span><input className="input" value={customDir} onChange={(e) => setCustomDir(e.target.value)} placeholder="다른 드라이브 · USB · 네트워크 공유 폴더" /></label>
+          <Button onClick={pickDir} style={{ alignSelf: 'flex-end' }}>폴더 선택…</Button>
+          <Button onClick={checkDir} disabled={!customDir.trim()} style={{ alignSelf: 'flex-end' }}>경로 검사</Button>
+          <label className="row" style={{ alignSelf: 'flex-end', height: 'var(--h-control, 28px)' }}><input type="checkbox" checked={fallback} onChange={(e) => setFallback(e.target.checked)} /> 지정 경로를 쓸 수 없으면 기본 경로에 대체 백업</label>
+          <Button variant="primary" onClick={saveSettings} style={{ alignSelf: 'flex-end' }}>설정 저장</Button>
+        </div>
+        {dirCheck && <div className={dirCheck.ok ? 'notice notice--ok' : 'notice notice--bad'} style={{ marginTop: 8 }}>{dirCheck.ok ? `사용할 수 있습니다. 남은 공간 ${dirCheck.freeBytes === null ? '확인 불가' : bytes(dirCheck.freeBytes)}` : dirCheck.message}</div>}
+        {d && !d.dirCheck.ok && <Notice kind="bad">현재 백업 경로({d.dir})를 쓸 수 없습니다: {d.dirCheck.message}{d.fallbackEnabled ? ' 자동 백업은 기본 경로에 대체 저장되며 실제 저장 위치가 목록에 표시됩니다.' : ' 대체 백업이 꺼져 있어 자동 백업이 실패합니다.'}</Notice>}
+        <p className="muted" style={{ marginBottom: 0 }}>자동 백업은 최근 N개만 남기고 정리합니다. 수동·마이그레이션 직전·복원 직전·업데이트 직전 백업은 자동으로 지우지 않습니다. 클라우드 자동 업로드는 제공하지 않습니다.</p>
       </Card>
       <Card title="백업 목록">
         {list.error && <Notice kind="bad">{errorMessage(list.error)}</Notice>}
@@ -143,7 +193,7 @@ function Backup() {
         {d && d.backups.length > 0 && (
           <div className="tableWrap">
             <table className="table">
-              <thead><tr><th>생성</th><th>파일</th><th>유형</th><th className="num">크기</th><th>스키마 · 앱</th><th className="center">검증</th><th>내용</th></tr></thead>
+              <thead><tr><th>생성</th><th>파일</th><th>유형</th><th className="num">크기</th><th>스키마 · 앱</th><th className="center">검증</th><th className="center">암호화</th><th>위치</th><th>내용</th></tr></thead>
               <tbody>{d.backups.map((b) => <Row key={b.path} b={b} />)}</tbody>
             </table>
           </div>
@@ -153,7 +203,7 @@ function Backup() {
             <p className="muted" style={{ marginTop: 10 }}>검증 실패 · 미검증 · 이전 형식 ({d.failed.length}건) — 정상 목록에 넣지 않으며 복원에 쓸 수 없습니다.</p>
             <div className="tableWrap">
               <table className="table">
-                <thead><tr><th>생성</th><th>파일</th><th>유형</th><th className="num">크기</th><th>스키마 · 앱</th><th className="center">검증</th><th>사유</th></tr></thead>
+                <thead><tr><th>생성</th><th>파일</th><th>유형</th><th className="num">크기</th><th>스키마 · 앱</th><th className="center">검증</th><th className="center">암호화</th><th>위치</th><th>사유</th></tr></thead>
                 <tbody>{d.failed.map((b) => <Row key={b.path} b={b} />)}</tbody>
               </table>
             </div>
@@ -175,26 +225,32 @@ function Restore() {
   const [confirming, setConfirming] = useState(false)
   const [typed, setTyped] = useState('')
   const [result, setResult] = useState<RestoreResult | null>(null)
+  const [password, setPassword] = useState('')
+  const needsPassword = path.toLowerCase().endsWith('.asbk') && (pv === null || pv.blocked.some((b) => b.includes('비밀번호')))
+  async function inspect(p: string, pw: string) {
+    setBusy(true)
+    try {
+      setPv(await api.restoreInspect(p, pw || null))
+    } catch (e) {
+      toast.show(errorMessage(e), true)
+    } finally {
+      setBusy(false)
+    }
+  }
   async function pick() {
-    const p = await open({ multiple: false, filters: [{ name: '백업 패키지', extensions: ['zip'] }] })
+    const p = await open({ multiple: false, filters: [{ name: '백업 패키지', extensions: ['asbk', 'zip'] }] })
     if (typeof p === 'string') {
       setPath(p)
       setPv(null)
       setResult(null)
-      setBusy(true)
-      try {
-        setPv(await api.restoreInspect(p))
-      } catch (e) {
-        toast.show(errorMessage(e), true)
-      } finally {
-        setBusy(false)
-      }
+      setPassword('')
+      await inspect(p, '')
     }
   }
   async function run() {
     setBusy(true)
     try {
-      const r = await api.restoreApply(path, true)
+      const r = await api.restoreApply(path, true, password || null)
       setResult(r)
       setConfirming(false)
       toast.show(r.ok ? '복원이 끝났습니다.' : r.message, !r.ok)
@@ -210,8 +266,15 @@ function Restore() {
       <Card title="1. 복원 파일 선택">
         <div className="row">
           <Button variant="primary" onClick={pick} disabled={busy}>백업 파일 선택…</Button>
-          <span className="muted">{path || '검증된 백업 패키지(.zip)를 고르면 검증·비교 결과가 아래에 나옵니다. 고르기만 해서는 아무것도 바뀌지 않습니다.'}</span>
+          <span className="muted">{path || '백업 패키지(.asbk 또는 옛 .zip)를 고르면 검증·비교 결과가 아래에 나옵니다. 고르기만 해서는 아무것도 바뀌지 않습니다.'}</span>
         </div>
+        {path.toLowerCase().endsWith('.asbk') && (
+          <div className="row" style={{ marginTop: 8 }}>
+            <label className="field"><span>백업 비밀번호 (비밀번호 백업일 때)</span><input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="off" /></label>
+            <Button onClick={() => inspect(path, password)} disabled={busy} style={{ alignSelf: 'flex-end' }}>비밀번호로 검증</Button>
+            {needsPassword && <span className="muted" style={{ alignSelf: 'flex-end' }}>현재 계정용 백업은 비밀번호 없이 열립니다. 비밀번호 백업이면 입력 뒤 '비밀번호로 검증'.</span>}
+          </div>
+        )}
       </Card>
       {pv && (
         <Card title="2. 백업 정보 · 현재 자료와 비교 · 복원 영향 미리보기">

@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "방과후 회계 검증 매니저",
   "mainBinaryName": "asaccounting",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "identifier": "kr.school.asaccounting",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -27,9 +27,17 @@
       "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDBBRENCRTRGNTQ0MDk1ODYKUldTR2xVQlVUNzdjQ25WRFY3cWt6STNSKzRtWW1vZi9hdFlxVVI4cGtxeElQdDhGc0FMN1NWZisK",
+      "endpoints": ["https://github.com/lohemal/afterschool-accounting/releases/latest/download/latest.json"],
+      "windows": { "installMode": "passive" }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

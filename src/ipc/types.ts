@@ -1122,15 +1122,55 @@ export interface BackupInfo {
   counts: DbCounts | null
   protected: boolean
   legacy: boolean
+  encrypted: boolean
+  encryption: 'none' | 'dpapi' | 'password'
+  encryptionLabel: string
+  location: string
+  fallback: boolean
+}
+
+export interface DirCheck {
+  path: string
+  exists: boolean
+  writable: boolean
+  freeBytes: number | null
+  ok: boolean
+  message: string
+}
+
+export interface BackupSettingsInput {
+  autoEnabled: boolean
+  keep: number
+  customDir?: string | null
+  encryption: 'none' | 'dpapi'
+  fallbackEnabled: boolean
+}
+
+export interface MonthChanges {
+  fiscalMonthId: number
+  status: string
+  closedAt: string | null
+  hasFingerprint: boolean
+  changed: boolean
+  newEntryIds: number[]
+  changedEntryIds: number[]
+  adjustmentChanges: [number, string, string][]
+  allocationChanged: boolean
+  summary: string
 }
 
 export interface BackupList {
   dir: string
+  defaultDir: string
+  customDir: string | null
+  dirCheck: DirCheck
   backups: BackupInfo[]
   failed: BackupInfo[]
   lastBackupAt: string | null
   autoEnabled: boolean
   keep: number
+  encryption: 'none' | 'dpapi'
+  fallbackEnabled: boolean
 }
 
 export interface RestorePreview {

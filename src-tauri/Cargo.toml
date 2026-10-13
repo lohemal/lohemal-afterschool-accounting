@@ -1,6 +1,6 @@
 [package]
 name = "asaccounting"
-version = "0.0.1"
+version = "0.1.0"
 description = "방과후 회계 검증 매니저"
 authors = ["lohemal"]
 edition = "2021"
@@ -32,9 +32,21 @@ hex = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 rust_xlsxwriter = "0.89"
 tempfile = "3"
+# P6 백업 암호화 — 인증 암호화(AES-256-GCM) + 비밀번호 키 유도(Argon2id) + Windows DPAPI(현재 계정용). 직접 구현하지 않는다.
+aes-gcm = "0.10"
+argon2 = "0.5"
+zeroize = "1"
+base64 = "0.22"
+rand = "0.8"
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Memory"] }
+# P6 자동 업데이트 — 서명 검증 필수(공개키는 tauri.conf.json), 설치 뒤 재시작
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 
 [dev-dependencies]
 tempfile = "3"
+# 업데이트 서명(.sig) 검증 시험 — updater 와 같은 minisign 형식
+minisign-verify = "0.2"
 
 [profile.release]
 codegen-units = 1

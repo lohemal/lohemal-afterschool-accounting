@@ -28,6 +28,9 @@ src-tauri/gen/
 backups/
 exports/
 logs/
+*.asbk
+ops-history.jsonl
+out/
 
 # 업데이터 서명 키 (절대 커밋 금지)
 *.key

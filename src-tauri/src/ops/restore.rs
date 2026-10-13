@@ -14,6 +14,19 @@ use crate::error::{AppError, AppResult};
 use crate::model::*;
 use crate::ops::{backup, history};
 
+/// 패키지(zip/asbk)를 읽을 수 있는 zip 으로 연다. asbk 면 자료 폴더 안 임시 폴더에 복호화한다.
+fn open_zip(db: &Db, path: &Path, password: Option<&str>) -> AppResult<(PathBuf, Option<tempfile::TempDir>)> {
+    if !crate::ops::crypto::is_encrypted_path(path) {
+        return Ok((path.to_path_buf(), None));
+    }
+    let bytes = std::fs::read(path)?;
+    let plain = crate::ops::crypto::decrypt(&bytes, password)?;
+    let tmp = tempfile::Builder::new().prefix(".restore-open-").tempdir_in(db.data_dir())?;
+    let zp = tmp.path().join("package.zip");
+    std::fs::write(&zp, &*plain)?;
+    Ok((zp, Some(tmp)))
+}
+
 fn extract_to(zip_path: &Path, name: &str, dest: &Path) -> AppResult<()> {
     let f = std::fs::File::open(zip_path)?;
     let mut z = zip::ZipArchive::new(f).map_err(|e| AppError::new("RESTORE", "백업 패키지를 열지 못했습니다.").detail(e.to_string()))?;
@@ -41,15 +54,18 @@ fn db_sha(path: &Path) -> String {
 }
 
 /// 복원 미리보기 — 검증 결과, 백업 메타데이터, 현재 자료와의 건수 비교, 차단 사유.
-pub fn inspect(db: &Db, zip_path: &Path) -> AppResult<RestorePreview> {
+pub fn inspect(db: &Db, zip_path: &Path, password: Option<&str>) -> AppResult<RestorePreview> {
     let current = db.read(backup::counts)?;
-    let verify = backup::verify(zip_path)?;
+    let data_dir = db.data_dir();
+    let verify = backup::verify_with(zip_path, &data_dir, password)?;
     let mut blocked: Vec<String> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
     if !verify.ok {
         blocked.push(format!("백업 검증 실패: {}", verify.errors.join(" / ")));
     }
-    let manifest = backup::read_manifest(zip_path).ok();
+    let manifest = if verify.ok { backup::read_manifest(zip_path, &data_dir, password).ok() } else { None };
+    let (zip_path_open, _open_tmp) = if verify.ok { open_zip(db, zip_path, password)? } else { (zip_path.to_path_buf(), None) };
+    let zip_path = zip_path_open.as_path();
     let mut bcounts = None;
     if let Some(m) = &manifest {
         if m.format_version > backup::FORMAT_VERSION {
@@ -81,19 +97,25 @@ pub fn inspect(db: &Db, zip_path: &Path) -> AppResult<RestorePreview> {
     Ok(RestorePreview { path: zip_path.display().to_string(), manifest, verify, current, backup: bcounts, blocked, warnings, can_restore })
 }
 
+pub fn apply_with_password(db: &Db, zip_path: &Path, confirm: bool, password: Option<&str>) -> AppResult<RestoreResult> {
+    apply_inner(db, zip_path, confirm, None, password)
+}
+
 /// 복원 실행. `confirm` 이 없으면 아무것도 하지 않는다.
 pub fn apply(db: &Db, zip_path: &Path, confirm: bool) -> AppResult<RestoreResult> {
-    apply_inner(db, zip_path, confirm, None)
+    apply_inner(db, zip_path, confirm, None, None)
 }
 
 /// `fail_at` 은 시험용 — 그 지점에서 일부러 실패시켜 원상 복구를 확인한다.
-pub fn apply_inner(db: &Db, zip_path: &Path, confirm: bool, fail_at: Option<&str>) -> AppResult<RestoreResult> {
+pub fn apply_inner(db: &Db, package_path: &Path, confirm: bool, fail_at: Option<&str>, password: Option<&str>) -> AppResult<RestoreResult> {
     let data_dir = db.data_dir();
     if !confirm {
         return Err(AppError::invalid("복원은 미리보기를 확인하고 최종 확인을 해야 실행됩니다."));
     }
-    let pv = inspect(db, zip_path)?;
-    let file_name = zip_path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let pv = inspect(db, package_path, password)?;
+    let file_name = package_path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let (zip_buf, _open_tmp) = if pv.can_restore { open_zip(db, package_path, password)? } else { (package_path.to_path_buf(), None) };
+    let zip_path = zip_buf.as_path();
     if !pv.can_restore {
         history::record(&data_dir, "restore", "blocked", &format!("복원 차단: {}", pv.blocked.join(" / ")), Some(&file_name), serde_json::json!({ "blocked": pv.blocked }))?;
         return Err(AppError::invalid(format!("복원할 수 없습니다: {}", pv.blocked.join(" / "))));
@@ -104,7 +126,7 @@ pub fn apply_inner(db: &Db, zip_path: &Path, confirm: bool, fail_at: Option<&str
     let before_sha = db_sha(Path::new(&safety.path)).to_string();
     let before_db_sha = {
         // 안전 백업 안의 DB 해시 = 복원 전 DB 식별자
-        backup::read_manifest(Path::new(&safety.path)).ok().and_then(|m| m.files.iter().find(|f| f.path == backup::DB_IN_PACKAGE).map(|f| f.sha256.clone())).unwrap_or(before_sha)
+        backup::read_manifest(Path::new(&safety.path), &data_dir, None).ok().and_then(|m| m.files.iter().find(|f| f.path == backup::DB_IN_PACKAGE).map(|f| f.sha256.clone())).unwrap_or(before_sha)
     };
     let after_db_sha = pv.manifest.as_ref().and_then(|m| m.files.iter().find(|f| f.path == backup::DB_IN_PACKAGE).map(|f| f.sha256.clone())).unwrap_or_default();
     // 2. 임시 위치에 준비 + 검증
