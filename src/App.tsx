@@ -11,6 +11,7 @@ import { DiffPage } from '@/pages/DiffPage'
 import { FundsPage } from '@/pages/FundsPage'
 import { HistoryPage } from '@/pages/HistoryPage'
 import { MonthlyPage } from '@/pages/MonthlyPage'
+import { ProgramLinkPage } from '@/pages/ProgramLinkPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 import { UploadPage } from '@/pages/UploadPage'
 import { VoucherPage } from '@/pages/VoucherPage'
@@ -56,6 +57,7 @@ export default function App() {
               <Route index element={<DashboardPage />} />
               <Route path="/monthly" element={<MonthlyPage />} />
               <Route path="/upload" element={<UploadPage />} />
+              <Route path="/programs" element={<ProgramLinkPage />} />
               <Route path="/funds" element={<FundsPage />} />
               <Route path="/diff" element={<DiffPage />} />
               <Route path="/adjust" element={<AdjustPage />} />

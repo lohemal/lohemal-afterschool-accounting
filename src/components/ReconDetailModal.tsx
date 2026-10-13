@@ -55,7 +55,33 @@ export function ReconDetailModal({ fiscalMonthId, row, onClose }: { fiscalMonthI
             <div className="stat"><span>귀속월</span><strong style={{ fontFamily: 'inherit', fontSize: 13 }}>{d.monthLabel}</strong></div>
             <div className="stat"><span>검증 · 확인</span><strong style={{ fontFamily: 'inherit' }}><StatusBadge row={d.row} /> <NoteBadge row={d.row} /></strong></div>
           </div>
-          {d.members.length > 0 && <p className="muted" style={{ margin: '8px 0 0' }}>그룹 구성: {d.members.join(' + ')} — 그룹 전체로만 검증하며 개별 프로그램 지급액은 확인되지 않습니다.</p>}
+          {d.members.length > 0 && d.row.unitKind === 'group' && <p className="muted" style={{ margin: '8px 0 0' }}>그룹 구성: {d.members.join(' + ')} — 그룹 전체로만 검증하며 개별 프로그램 지급액은 확인되지 않습니다.</p>}
+          {d.row.isParent && <p className="muted" style={{ margin: '8px 0 0' }}>통합 프로그램 — 세부반 {d.members.filter((m) => m !== d.row.unitName).join(' + ')} 의 징수를 합산해 통합 지급과 대조합니다. 지급은 세부반에 나누지 않습니다.</p>}
+          {d.row.status === 'link_pending' && <div className="notice notice--soon" style={{ marginTop: 8 }}>🟡 <strong>매핑 확인 필요</strong> — {d.row.linkHint} <Button size="sm" onClick={() => { onClose(); navigate('/programs') }}>매핑 관리</Button></div>}
+          {d.row.children.length > 0 && (
+            <>
+              <h3 className="card__title" style={{ marginTop: 14 }}>세부반 합산 내역</h3>
+              <div className="tableWrap">
+                <table className="table">
+                  <thead><tr><th>세부반</th><th className="num">최초 징수</th><th className="num">추가징수</th><th className="num">환불</th><th className="num">징수 기준액</th><th className="num">직접 지급 (확인)</th><th className="num">거래</th></tr></thead>
+                  <tbody>
+                    {d.row.children.map((c) => (
+                      <tr key={`${c.programId}-${c.direct ? 'd' : 'c'}`}>
+                        <td>{c.programName}</td>
+                        <td className="num">{won(c.initial)}</td>
+                        <td className="num">{won(c.extra)}</td>
+                        <td className="num">{won(c.refund)}</td>
+                        <td className="num">{won(c.basis)}</td>
+                        <td className="num">{c.expense ? won(c.expense) : <span className="muted">—</span>}</td>
+                        <td className="num">{won(c.entryCount)}</td>
+                      </tr>
+                    ))}
+                    <tr><td><strong>통합 합계</strong></td><td className="num"><strong>{won(d.row.initial)}</strong></td><td className="num"><strong>{won(d.row.extra)}</strong></td><td className="num"><strong>{won(d.row.refund)}</strong></td><td className="num"><strong>{won(d.row.basis)}</strong></td><td className="num muted">통합 지급 {won(d.row.expense)}</td><td /></tr>
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
 
           <h3 className="card__title" style={{ marginTop: 14 }}>계산 근거</h3>
           <div className="grid" style={{ gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10 }}>

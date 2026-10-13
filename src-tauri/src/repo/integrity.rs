@@ -165,6 +165,46 @@ pub fn run(conn: &Connection, data_dir: &Path, school_year_id: i64) -> AppResult
         }
     }
     a.close("unmapped_fund", "재원·프로그램 매핑", "check");
+    // P7-1.1 세부반 → 통합 프로그램 연결: 구조 오류 · 세부반 직접 지급 · 확정되지 않은 추천
+    {
+        let mut st = conn.prepare(
+            "SELECT p.name, pp.name,
+                    EXISTS (SELECT 1 FROM program_link x WHERE x.program_id = l.parent_id),
+                    EXISTS (SELECT 1 FROM program_group_member m WHERE m.program_id = l.program_id),
+                    p.school_year_id <> pp.school_year_id
+               FROM program_link l JOIN program p ON p.id = l.program_id JOIN program pp ON pp.id = l.parent_id
+              WHERE l.school_year_id = ?1",
+        )?;
+        let rows: Vec<(String, String, bool, bool, bool)> = st.query_map([yid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?.collect::<Result<_, _>>()?;
+        for (child, parent, deep, grouped, other_year) in rows {
+            if deep {
+                a.item("program_links", "error", "통합 프로그램이 다시 세부반", format!("'{child}' → '{parent}' 인데 '{parent}' 도 다른 통합 프로그램의 세부반입니다 (깊이는 한 단계)."), String::new(), child.clone(), String::new(), vec![], "연결표가 직접 수정됨", "프로그램 매핑 화면", "상위 연결을 해제한 뒤 다시 확정해 주세요.");
+            }
+            if grouped {
+                a.item("program_links", "error", "세부반이 그룹 구성원", format!("'{child}' 은(는) '{parent}' 의 세부반이면서 프로그램 그룹 구성원입니다 (지급 중복 위험)."), String::new(), child.clone(), String::new(), vec![], "연결표 또는 그룹표가 직접 수정됨", "프로그램 매핑 화면 · 설정 → 프로그램 그룹", "연결을 해제하거나 그룹에서 빼 주세요.");
+            }
+            if other_year {
+                a.item("program_links", "error", "학년도가 다른 연결", format!("'{child}' → '{parent}' 의 학년도가 서로 다릅니다."), String::new(), child.clone(), String::new(), vec![], "연결표가 직접 수정됨", "프로그램 매핑 화면", "연결을 해제해 주세요.");
+            }
+        }
+        let mut st = conn.prepare(
+            "SELECT p.name, pp.name, count(*), coalesce(sum(e.amount), 0), group_concat(e.id)
+               FROM program_link l JOIN ledger_entry e ON e.program_id = l.program_id AND e.state = 'active' AND e.flow = 'expenditure'
+               JOIN program p ON p.id = l.program_id JOIN program pp ON pp.id = l.parent_id
+              WHERE l.school_year_id = ?1 GROUP BY l.program_id",
+        )?;
+        let rows: Vec<(String, String, i64, i64, String)> = st.query_map([yid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?.collect::<Result<_, _>>()?;
+        for (child, parent, n, sum, ids) in rows {
+            let entry_ids: Vec<i64> = ids.split(',').filter_map(|x| x.parse().ok()).collect();
+            a.item("child_expense", "check", "세부반에 직접 연결된 지급", format!("세부반 '{child}' 에 지급 {n}건({})이 직접 붙어 있습니다. 통합 프로그램 '{parent}' 의 지급액에 함께 합산됩니다.", w(sum)), String::new(), child.clone(), String::new(), entry_ids, "지급 자료의 프로그램 표기가 세부반 이름으로 되어 있음", "월별 정산 → 통합 프로그램 행 상세의 지급 내역", "지급 자료의 표기가 통합 프로그램이어야 하면 파일을 교체하거나 별칭을 조정해 주세요. 원장은 바꾸지 않습니다.");
+        }
+        for s in crate::repo::program_link::pending(conn, yid)? {
+            a.item("link_pending", "check", "세부반 매핑 확인 필요", format!("'{}' 은(는) '{}' 의 세부반으로 추천되었지만 확정되지 않았습니다 ({}).", s.program_name, s.parent_name, s.reason), String::new(), s.program_name.clone(), String::new(), vec![], "세부반·통합 프로그램 연결 미확정", "프로그램 매핑 화면", "추천을 확인한 뒤 확정하면 통합 프로그램 기준으로 대조됩니다. 자동으로 확정하지 않습니다.");
+        }
+    }
+    a.close("program_links", "세부반·통합 프로그램 연결 구조", "error");
+    a.close("child_expense", "세부반 직접 지급", "check");
+    a.close("link_pending", "세부반 매핑 확인 필요", "check");
     // 10·11. 자유수강권 한도·기간 · 전입생 · 합산 중복
     {
         let usages = voucher::usage_all(conn, yid)?;

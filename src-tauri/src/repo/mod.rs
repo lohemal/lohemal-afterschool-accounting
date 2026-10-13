@@ -9,6 +9,7 @@ pub mod fundalias;
 pub mod integrity;
 pub mod ledger;
 pub mod program;
+pub mod program_link;
 pub mod recon;
 pub mod setting;
 pub mod student;

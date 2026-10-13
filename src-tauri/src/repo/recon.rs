@@ -20,9 +20,15 @@
 //!   group_only   그룹 검증  — 지급이 그룹으로 묶여 개별 프로그램 지급액을 알 수 없음
 //!   unallocated  배분 미확정 — 이 달에 아직 프로그램에 배분되지 않은 같은 항목의 징수 거래가 있음
 //!   unmapped     매핑 미확정 — 재원이 미확정인 거래가 섞여 있음
-//!   missing      자료 부족  — 징수 쪽이나 지출 쪽 자료가 없음 (0원으로 보지 않는다)
-//!   mismatch     불일치     — 비교 가능한 재원에서 차액이 있음 (총액이 같아도 재원이 어긋나면 불일치)
+//!   missing      자료 확인 필요 — 징수 쪽이나 지출 쪽 자료가 없음 (0원으로 보지 않는다)
+//!   mismatch     차액 확인 필요 — 비교 가능한 재원에서 차액이 있음 (총액이 같아도 재원이 어긋나면 불일치)
 //!   ok           정상       — 비교 가능한 재원이 모두 0원 차액
+//!   link_pending 매핑 확인 필요 — 세부반 → 통합 프로그램 추천이 확정되지 않음 (P7-1.1). 원본 금액은 보여 주되 차액을 판정하지 않는다
+//!
+//! 세부반 → 통합 프로그램 (P7-1.1, `program_link`)
+//!   징수는 세부반('로봇과학A'·'B') 단위, 지급은 통합 프로그램('로봇과학') 단위로 들어온다. 확정된 연결이 있으면 세부반 칸을
+//!   통합 프로그램 칸에 **한 번씩** 합산하고(징수·지급 모두), 세부반은 통합 행 아래 펼쳐 보이는 줄로만 남는다.
+//!   원장 거래는 그대로이고 연결이 바뀌면 다음 조회부터 다시 계산된다. 통합 프로그램이 그룹 구성원이면 그룹은 합산된 칸을 받는다.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -52,10 +58,11 @@ fn item_set_of(code: &str) -> &'static str {
 pub fn status_label(s: &str) -> &'static str {
     match s {
         "ok" => "정상",
-        "mismatch" => "불일치",
-        "missing" => "자료 부족",
+        "mismatch" => "차액 확인 필요",
+        "missing" => "자료 확인 필요",
         "unallocated" => "배분 미확정",
-        "unmapped" => "매핑 미확정",
+        "unmapped" => "재원 매핑 미확정",
+        "link_pending" => "매핑 확인 필요",
         "unverifiable" => "검증 불가",
         "group_only" => "그룹으로 검증",
         "orphan" => "원본 재확인 필요",
@@ -76,15 +83,16 @@ pub fn note_label(s: &str) -> &'static str {
 /// 판정 우선순위 (차액 분석 기본 정렬).
 pub fn status_rank(s: &str) -> i32 {
     match s {
-        "unallocated" => 0,
-        "unmapped" => 1,
-        "orphan" => 1,
-        "mismatch" => 2,
-        "missing" => 3,
-        "group_only" => 4,
-        "ok" => 5,
-        "unverifiable" => 6,
-        _ => 7,
+        "link_pending" => 0,
+        "unallocated" => 1,
+        "unmapped" => 2,
+        "orphan" => 2,
+        "mismatch" => 3,
+        "missing" => 4,
+        "group_only" => 5,
+        "ok" => 6,
+        "unverifiable" => 7,
+        _ => 8,
     }
 }
 
@@ -271,6 +279,21 @@ impl Cell {
         self.alloc_ids.extend(o.alloc_ids.iter());
         self.has_basis |= o.has_basis;
     }
+    /// 세부반 칸을 통합 프로그램 칸에 합산 — 징수와 지급 모두 (세부반에 직접 붙은 지급도 통합 지급액에 든다).
+    fn absorb_full(&mut self, o: &Cell) {
+        self.absorb(o);
+        for (f, v) in &o.expense_by_fund {
+            *self.expense_by_fund.entry(*f).or_default() += v;
+        }
+        self.expense_entries.extend(o.expense_entries.iter());
+        self.has_expense |= o.has_expense;
+    }
+    fn basis_total(&self) -> i64 {
+        self.basis_by_fund.values().sum()
+    }
+    fn expense_total(&self) -> i64 {
+        self.expense_by_fund.values().sum()
+    }
 }
 
 struct Computed {
@@ -283,6 +306,17 @@ struct Computed {
     expenditure_total: i64,
     unit_names: HashMap<Unit, String>,
     members: HashMap<i64, Vec<i64>>,
+    /// 통합 프로그램 → 세부반들
+    children: HashMap<i64, Vec<i64>>,
+    /// (통합 프로그램, 항목) → 합산 전 세부반 칸들
+    child_cells: BTreeMap<(i64, &'static str), Vec<(i64, Cell)>>,
+    /// (통합 프로그램, 항목) → 통합 프로그램 자신에게 직접 귀속된 칸 (합산 전)
+    direct_cells: BTreeMap<(i64, &'static str), Cell>,
+    /// 추천이 확정되지 않은 세부반 → 추천 통합 프로그램 이름
+    pending_child: HashMap<i64, String>,
+    /// 추천 통합 프로그램 → 확정되지 않은 세부반 후보 이름들
+    pending_parent: HashMap<i64, Vec<String>>,
+    program_names: HashMap<i64, String>,
 }
 
 fn compute(conn: &Connection, month: i64) -> AppResult<Computed> {
@@ -355,6 +389,47 @@ fn compute(conn: &Connection, month: i64) -> AppResult<Computed> {
             }
         }
     }
+    // 세부반 → 통합 프로그램 합산 (P7-1.1). 세부반 칸은 통합 칸에 한 번씩 더하고 목록에서 뺀다.
+    let year_id: i64 = conn.query_row("SELECT school_year_id FROM fiscal_month WHERE id = ?1", [month], |r| r.get(0))?;
+    let links = crate::repo::program_link::links(conn, year_id)?;
+    let mut children: HashMap<i64, Vec<i64>> = HashMap::new();
+    for (c, p) in &links {
+        children.entry(*p).or_default().push(*c);
+    }
+    for v in children.values_mut() {
+        v.sort();
+    }
+    let mut child_cells: BTreeMap<(i64, &'static str), Vec<(i64, Cell)>> = BTreeMap::new();
+    let mut direct_cells: BTreeMap<(i64, &'static str), Cell> = BTreeMap::new();
+    let child_keys: Vec<(i64, &'static str)> = cells
+        .keys()
+        .filter_map(|(u, s)| match u { Unit::Program(p) if links.contains_key(p) => Some((*p, *s)), _ => None })
+        .collect();
+    for (c, set) in child_keys {
+        let cell = cells.remove(&(Unit::Program(c), set)).unwrap_or_default();
+        let parent = links[&c];
+        if let std::collections::btree_map::Entry::Vacant(v) = direct_cells.entry((parent, set)) {
+            if let Some(pc) = cells.get(&(Unit::Program(parent), set)) {
+                v.insert(pc.clone());
+            }
+        }
+        cells.entry((Unit::Program(parent), set)).or_default().absorb_full(&cell);
+        child_cells.entry((parent, set)).or_default().push((c, cell));
+    }
+    let mut program_names: HashMap<i64, String> = HashMap::new();
+    {
+        let mut st = conn.prepare("SELECT id, name FROM program WHERE school_year_id = ?1")?;
+        for row in st.query_map([year_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))? {
+            let (id, name) = row?;
+            program_names.insert(id, name);
+        }
+    }
+    let mut pending_child: HashMap<i64, String> = HashMap::new();
+    let mut pending_parent: HashMap<i64, Vec<String>> = HashMap::new();
+    for s in crate::repo::program_link::pending(conn, year_id)? {
+        pending_child.insert(s.program_id, s.parent_name.clone());
+        pending_parent.entry(s.parent_id).or_default().push(s.program_name.clone());
+    }
     // 그룹 기준액 = 구성 프로그램 기준액 합 (그룹 칸이 있을 때만; 대시보드 합계에 겹쳐 더하지 않는다)
     let group_units: Vec<(i64, &'static str)> = cells
         .keys()
@@ -380,7 +455,7 @@ fn compute(conn: &Connection, month: i64) -> AppResult<Computed> {
         };
         unit_names.insert(*u, name);
     }
-    Ok(Computed { idx, cells, unallocated_by_set, unallocated_total, unlinked_students: unlinked, collection_total: coll, expenditure_total: exp, unit_names, members })
+    Ok(Computed { idx, cells, unallocated_by_set, unallocated_total, unlinked_students: unlinked, collection_total: coll, expenditure_total: exp, unit_names, members, children, child_cells, direct_cells, pending_child, pending_parent, program_names })
 }
 
 fn add_basis(c: &mut Cell, e: &E, amount: i64, via_alloc: bool, alloc_id: Option<i64>) {
@@ -557,12 +632,48 @@ fn build_row(conn: &Connection, month: i64, cp: &Computed, unit: Unit, set: &'st
     if cp.unlinked_students > 0 {
         hints.push(format!("이 달에 학생을 식별하지 못한 징수 거래 {}건이 있습니다.", cp.unlinked_students));
     }
+    // 세부반 합산 줄 (통합 프로그램 행) · 매핑 확인 필요
+    let mut children_rows: Vec<ReconChild> = Vec::new();
+    let mut is_parent = false;
+    let mut link_pending = false;
+    let mut link_hint = String::new();
+    if let Unit::Program(p) = unit {
+        is_parent = cp.children.contains_key(&p);
+        // 직접 귀속 줄: 세부반 칸이 합산됐으면 합산 전 칸, 아니면(세부반 거래 없음) 이 칸 자체. 징수가 있을 때만 (지급은 통합 행의 것).
+        let direct: Option<Cell> = cp.direct_cells.get(&(p, set)).cloned().or_else(|| if is_parent && !cp.child_cells.contains_key(&(p, set)) { Some(c.clone()) } else { None });
+        if let Some(d) = direct {
+            if d.has_basis {
+                // 통합 프로그램 자신의 지급은 통합 행의 지급액이지 '세부반 직접 지급' 이 아니다 → 0
+                children_rows.push(ReconChild { program_id: p, program_name: format!("{} (직접 귀속)", cp.program_names.get(&p).cloned().unwrap_or_default()), direct: true, initial: d.initial, extra: d.extra, refund: d.refund, basis: d.basis_total(), expense: 0, entry_count: d.basis_entries.len() as i64 });
+            }
+        }
+        if let Some(list) = cp.child_cells.get(&(p, set)) {
+            for (cid, cc) in list {
+                children_rows.push(ReconChild { program_id: *cid, program_name: cp.program_names.get(cid).cloned().unwrap_or_else(|| format!("프로그램 #{cid}")), direct: false, initial: cc.initial, extra: cc.extra, refund: cc.refund, basis: cc.basis_total(), expense: cc.expense_total(), entry_count: (cc.basis_entries.len() + cc.expense_entries.len()) as i64 });
+            }
+            let parts: Vec<String> = list.iter().map(|(cid, cc)| format!("{} {}", cp.program_names.get(cid).cloned().unwrap_or_default(), w(cc.basis_total()))).collect();
+            hints.push(format!("세부반 {}개의 징수를 통합 프로그램에 합산했습니다: {}. 지급은 통합 프로그램에만 있습니다.", list.len(), parts.join(" · ")));
+            for (cid, cc) in list.iter().filter(|(_, cc)| cc.has_expense) {
+                hints.push(format!("세부반 '{}' 에 직접 연결된 지급 {} 이(가) 통합 지급액에 포함되어 있습니다. 지급 자료의 프로그램 표기를 확인해 주세요.", cp.program_names.get(cid).cloned().unwrap_or_default(), w(cc.expense_total())));
+            }
+        }
+        if let Some(parent_name) = cp.pending_child.get(&p) {
+            link_pending = true;
+            link_hint = format!("'{}' 은(는) 통합 프로그램 '{}' 의 세부반으로 추천되었습니다. 프로그램 매핑에서 확정하기 전에는 징수액을 합산하지 않고 차액도 판정하지 않습니다.", cp.program_names.get(&p).cloned().unwrap_or_default(), parent_name);
+        } else if let Some(names) = cp.pending_parent.get(&p) {
+            link_pending = true;
+            link_hint = format!("세부반 후보 {} 의 연결이 확정되지 않아 징수액이 합산되지 않았습니다. 프로그램 매핑에서 확정해 주세요.", names.iter().map(|n| format!("'{n}'")).collect::<Vec<_>>().join("·"));
+        }
+    }
     let comparable: Vec<&FundLine> = funds.iter().filter(|f| f.diff.is_some()).collect();
     let status = if set == "admin" || set == "other" {
         "unverifiable"
     } else if group_paid {
         hints.push("지급이 프로그램 그룹으로 묶여 있어 개별 프로그램 지급액은 확인되지 않습니다.".into());
         "group_only"
+    } else if link_pending {
+        hints.push(link_hint.clone());
+        "link_pending"
     } else if c.orphan {
         hints.push("근거 원본 거래가 취소된 수동 정정이 섞여 있습니다. 정정 이력에서 '원본 재확인 필요' 항목을 확인해 주세요.".into());
         "orphan"
@@ -648,6 +759,10 @@ fn build_row(conn: &Connection, month: i64, cp: &Computed, unit: Unit, set: &'st
         note_status,
         needs_recheck,
         fingerprint: fp,
+        is_parent,
+        children: children_rows,
+        link_pending,
+        link_hint,
     })
 }
 
@@ -664,7 +779,7 @@ pub fn month(conn: &Connection, fiscal_month_id: i64) -> AppResult<MonthRecon> {
     let comparable_expense = counted.iter().filter(|r| matches!(r.status.as_str(), "ok" | "mismatch")).map(|r| r.comparable_expense).sum();
     let excluded_basis = counted.iter().map(|r| if matches!(r.status.as_str(), "ok" | "mismatch") { r.excluded_basis + r.unmapped_basis } else { r.basis }).sum::<i64>() + cp.unallocated_total;
     let excluded_expense = counted.iter().map(|r| if matches!(r.status.as_str(), "ok" | "mismatch") { r.excluded_expense + r.unmapped_expense } else { r.expense }).sum();
-    let todo_count = rows.iter().filter(|r| matches!(r.status.as_str(), "mismatch" | "unallocated" | "unmapped" | "orphan") && r.note_status != "explained" || r.needs_recheck).count() as i64;
+    let todo_count = rows.iter().filter(|r| matches!(r.status.as_str(), "mismatch" | "unallocated" | "unmapped" | "orphan" | "link_pending") && r.note_status != "explained" || r.needs_recheck).count() as i64;
     Ok(MonthRecon {
         fiscal_month_id,
         collection_total: cp.collection_total,
@@ -678,6 +793,7 @@ pub fn month(conn: &Connection, fiscal_month_id: i64) -> AppResult<MonthRecon> {
         todo_count,
         mismatch_count: rows.iter().filter(|r| r.status == "mismatch").count() as i64,
         missing_count: rows.iter().filter(|r| r.status == "missing").count() as i64,
+        link_pending_count: rows.iter().filter(|r| r.status == "link_pending").count() as i64,
         rows,
     })
 }
@@ -806,8 +922,8 @@ pub fn detail(conn: &Connection, fiscal_month_id: i64, unit_kind: &str, unit_id:
     let row = build_row(conn, fiscal_month_id, &cp, unit, set, c)?;
     let allocs = load_allocations(conn, fiscal_month_id)?;
     let member_programs: BTreeSet<i64> = match unit {
-        Unit::Program(p) => [p].into_iter().collect(),
-        Unit::Group(g) => cp.members.get(&g).cloned().unwrap_or_default().into_iter().collect(),
+        Unit::Program(p) => [p].into_iter().chain(cp.children.get(&p).cloned().unwrap_or_default()).collect(),
+        Unit::Group(g) => cp.members.get(&g).cloned().unwrap_or_default().into_iter().flat_map(|m| [m].into_iter().chain(cp.children.get(&m).cloned().unwrap_or_default())).collect(),
     };
     let mut collection = Vec::new();
     for id in &c.basis_entries {
@@ -830,15 +946,21 @@ pub fn detail(conn: &Connection, fiscal_month_id: i64, unit_kind: &str, unit_id:
     let mut voided_ids: Vec<i64> = Vec::new();
     {
         let (kind, id) = unit_key(unit);
-        let sql = if kind == "program" {
-            "SELECT e.id FROM ledger_entry e WHERE e.fiscal_month_id = ?1 AND e.state <> 'active' AND e.program_id = ?2 ORDER BY e.id"
+        if kind == "program" {
+            let mut st = conn.prepare("SELECT e.id FROM ledger_entry e WHERE e.fiscal_month_id = ?1 AND e.state <> 'active' AND e.program_id = ?2 ORDER BY e.id")?;
+            for p in &member_programs {
+                for r in st.query_map(params![fiscal_month_id, p], |r| r.get::<_, i64>(0))? {
+                    voided_ids.push(r?);
+                }
+            }
         } else {
-            "SELECT e.id FROM ledger_entry e WHERE e.fiscal_month_id = ?1 AND e.state <> 'active' AND e.program_group_id = ?2 ORDER BY e.id"
-        };
-        let mut st = conn.prepare(sql)?;
-        for r in st.query_map(params![fiscal_month_id, id], |r| r.get::<_, i64>(0))? {
-            voided_ids.push(r?);
+            let mut st = conn.prepare("SELECT e.id FROM ledger_entry e WHERE e.fiscal_month_id = ?1 AND e.state <> 'active' AND e.program_group_id = ?2 ORDER BY e.id")?;
+            for r in st.query_map(params![fiscal_month_id, id], |r| r.get::<_, i64>(0))? {
+                voided_ids.push(r?);
+            }
         }
+        voided_ids.sort();
+        voided_ids.dedup();
     }
     for id in voided_ids {
         if item_set_of(&item_code_of(conn, id)?) != set {
@@ -857,12 +979,13 @@ pub fn detail(conn: &Connection, fiscal_month_id: i64, unit_kind: &str, unit_id:
         e.0 += 1;
         e.1 += t.attributed;
     }
-    let members: Vec<String> = member_programs.iter().filter_map(|p| cp.unit_names.get(&Unit::Program(*p)).cloned().or_else(|| conn.query_row("SELECT name FROM program WHERE id = ?1", [p], |r| r.get::<_, String>(0)).ok())).collect();
+    let members: Vec<String> = member_programs.iter().filter_map(|p| cp.program_names.get(p).cloned().or_else(|| cp.unit_names.get(&Unit::Program(*p)).cloned())).collect();
     let (kind, id) = unit_key(unit);
+    let show_members = matches!(unit, Unit::Group(_)) || row.is_parent;
     Ok(ReconDetail {
         month_label: year::month_label_of(conn, fiscal_month_id)?,
         row,
-        members: if matches!(unit, Unit::Group(_)) { members } else { Vec::new() },
+        members: if show_members { members } else { Vec::new() },
         collection,
         expenditure,
         parties: parties.into_iter().map(|(name, (count, total))| SummaryLine { name, count, total }).collect(),
@@ -901,3 +1024,7 @@ mod tests;
 #[cfg(test)]
 #[path = "recon_fund_tests.rs"]
 mod fund_tests;
+
+#[cfg(test)]
+#[path = "recon_link_tests.rs"]
+mod link_tests;

@@ -11,8 +11,11 @@ use crate::repo::audit;
 pub fn list(conn: &Connection, school_year_id: i64) -> AppResult<Vec<Program>> {
     let mut st = conn.prepare(
         "SELECT p.id, p.school_year_id, p.name, p.note, p.is_active,
-                (SELECT count(*) FROM ledger_entry e WHERE e.program_id = p.id AND e.state = 'active')
-           FROM program p WHERE p.school_year_id = ?1 ORDER BY p.name",
+                (SELECT count(*) FROM ledger_entry e WHERE e.program_id = p.id AND e.state = 'active'),
+                l.parent_id, pp.name,
+                (SELECT count(*) FROM program_link c WHERE c.parent_id = p.id)
+           FROM program p LEFT JOIN program_link l ON l.program_id = p.id LEFT JOIN program pp ON pp.id = l.parent_id
+          WHERE p.school_year_id = ?1 ORDER BY p.name",
     )?;
     let rows = st.query_map([school_year_id], |r| {
         Ok(Program {
@@ -23,6 +26,9 @@ pub fn list(conn: &Connection, school_year_id: i64) -> AppResult<Vec<Program>> {
             is_active: r.get::<_, i64>(4)? == 1,
             aliases: Vec::new(),
             entry_count: r.get(5)?,
+            parent_id: r.get(6)?,
+            parent_name: r.get(7)?,
+            child_count: r.get(8)?,
         })
     })?;
     let mut out: Vec<Program> = rows.collect::<Result<_, _>>()?;
@@ -148,6 +154,9 @@ pub fn group_create(conn: &Connection, school_year_id: i64, name: &str, member_i
         if same_year == 0 {
             return Err(AppError::invalid("다른 학년도의 프로그램은 그룹에 넣을 수 없습니다."));
         }
+        if crate::repo::program_link::parent_of(conn, *m)?.is_some() {
+            return Err(AppError::invalid(format!("'{}' 은(는) 통합 프로그램의 세부반이라 그룹에 넣을 수 없습니다 (지급 중복 방지).", name_of(conn, *m)?)));
+        }
         conn.execute(
             "INSERT OR IGNORE INTO program_group_member (group_id, program_id) VALUES (?1, ?2)",
             params![id, m],
@@ -212,20 +221,29 @@ pub fn resolve(conn: &Connection, school_year_id: i64, text: &str) -> AppResult<
     })
 }
 
-/// 제안 — 끝의 반 글자(A·B·C…) 하나를 뗀 이름이 이미 있으면 그것을 **제안**한다. 확정은 사용자가 한다.
-pub fn suggest(conn: &Connection, school_year_id: i64, text: &str) -> AppResult<Option<(i64, String)>> {
-    let t = text.trim();
-    let chars: Vec<char> = t.chars().collect();
-    if chars.len() < 2 {
+/// 업로드 미리보기의 제안 — 반 구분을 뗀 이름의 프로그램이 있으면 **제안**한다. 확정은 사용자가 한다.
+/// (프로그램 id, 이름, 종류, 근거). 종류 `child` = 세부반으로 등록해 그 통합 프로그램에 연결(지급 자료가 있거나 이미 통합 프로그램일 때),
+/// `alias` = 표기만 잇기(그 밖의 경우 — 세부반 구분이 필요 없을 때 고른다).
+pub fn suggest(conn: &Connection, school_year_id: i64, text: &str) -> AppResult<Option<(i64, String, String, String)>> {
+    let Some((base, _)) = crate::domain::program_link::split_class_suffix(text) else {
         return Ok(None);
-    }
-    let last = chars[chars.len() - 1];
-    if !last.is_ascii_uppercase() {
-        return Ok(None);
-    }
-    let base: String = chars[..chars.len() - 1].iter().collect();
+    };
     match resolve_target(conn, school_year_id, &base)? {
-        Some(Target::Program(id)) => Ok(Some((id, name_of(conn, id)?))),
+        Some(Target::Program(id)) => {
+            let name = name_of(conn, id)?;
+            if crate::repo::program_link::parent_of(conn, id)?.is_some() {
+                return Ok(None);
+            }
+            let children = crate::repo::program_link::children_of(conn, id)?.len();
+            let exp: i64 = conn.query_row("SELECT count(*) FROM ledger_entry WHERE program_id = ?1 AND state = 'active' AND flow = 'expenditure'", [id], |r| r.get(0))?;
+            if children > 0 {
+                Ok(Some((id, name.clone(), "child".into(), format!("'{name}' 은(는) 이미 세부반 {children}개를 가진 통합 프로그램"))))
+            } else if exp > 0 {
+                Ok(Some((id, name.clone(), "child".into(), format!("'{name}' 에 지급 자료 {exp}건 — 세부반 징수를 합산해 대조"))))
+            } else {
+                Ok(Some((id, name.clone(), "alias".into(), format!("'{name}' 에 아직 지급 자료가 없음"))))
+            }
+        }
         _ => Ok(None),
     }
 }
@@ -274,6 +292,27 @@ pub fn map_save(conn: &Connection, input: &ProgramMapInput) -> AppResult<Target>
             }
             Target::Group(id)
         }
+        // 세부반으로 등록하고 통합 프로그램에 연결(확정). 원본 표기는 세부반 이름으로 남는다.
+        "new_child" => {
+            let parent = input.parent_id.ok_or_else(|| AppError::invalid("연결할 통합 프로그램을 골라 주세요."))?;
+            let name = input.new_name.clone().unwrap_or_else(|| alias.to_string());
+            let id = match resolve_target(conn, input.school_year_id, name.trim())? {
+                Some(Target::Program(p)) => p,
+                Some(Target::Group(_)) => return Err(AppError::invalid("같은 이름의 그룹이 이미 있습니다.")),
+                None => create(conn, input.school_year_id, &name)?,
+            };
+            if name.trim() != alias {
+                add_alias(conn, input.school_year_id, id, alias)?;
+            }
+            crate::repo::program_link::apply(
+                conn,
+                input.school_year_id,
+                &[crate::model::LinkItem { program_id: id, parent_id: Some(parent) }],
+                "업로드 미리보기에서 확정",
+                "suggested",
+            )?;
+            Target::Program(id)
+        }
         other => return Err(AppError::invalid(format!("알 수 없는 매핑 종류: {other}"))),
     };
     audit::write(
@@ -317,7 +356,8 @@ mod tests {
         let db = Db::open_memory().unwrap();
         let y = db.write(|tx| year::create(tx, 2026)).unwrap();
         let coding = db.write(|tx| create(tx, y.id, "코딩")).unwrap();
-        assert_eq!(db.read(|c| suggest(c, y.id, "코딩A")).unwrap(), Some((coding, "코딩".into())));
+        let s = db.read(|c| suggest(c, y.id, "코딩A")).unwrap().expect("제안");
+        assert_eq!((s.0, s.1.as_str(), s.2.as_str()), (coding, "코딩", "alias"), "지급 자료가 없으면 표기 잇기 제안");
         assert_eq!(db.read(|c| resolve(c, y.id, "코딩A")).unwrap(), None, "제안은 자동 적용되지 않는다");
         assert_eq!(db.read(|c| suggest(c, y.id, "한자")).unwrap(), None);
         assert_eq!(db.read(|c| suggest(c, y.id, "A")).unwrap(), None);
@@ -337,6 +377,7 @@ mod tests {
             group_id: None,
             new_name: None,
             member_ids: Some(vec![uk, gt]),
+            parent_id: None,
         };
         let t = db.write(|tx| map_save(tx, &input)).unwrap();
         let Target::Group(gid) = t else { panic!("그룹이어야 한다") };
@@ -350,7 +391,7 @@ mod tests {
         // new_program 으로 '한자' 를 만들며 '한자급수' 를 별칭으로.
         let np = ProgramMapInput {
             school_year_id: y.id, alias: "한자급수".into(), target: "new_program".into(),
-            program_id: None, group_id: None, new_name: Some("한자".into()), member_ids: None,
+            program_id: None, group_id: None, new_name: Some("한자".into()), member_ids: None, parent_id: None,
         };
         let Target::Program(hid) = db.write(|tx| map_save(tx, &np)).unwrap() else { panic!() };
         assert_eq!(db.read(|c| resolve(c, y.id, "한자급수")).unwrap(), Some(hid));

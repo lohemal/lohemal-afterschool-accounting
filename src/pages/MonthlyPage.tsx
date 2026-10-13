@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 
 import { AllocationPanel } from '@/components/AllocationPanel'
 import { Modal } from '@/components/Modal'
@@ -30,6 +31,7 @@ export function MonthlyPage() {
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [detail, setDetail] = useState<ReconRow | null>(null)
+  const navigate = useNavigate()
 
   useEffect(() => {
     if (picked !== null || !months.data?.length) return
@@ -104,8 +106,9 @@ export function MonthlyPage() {
               <div className="stat"><span>비교 가능 (징수 / 지급)</span><strong>{won(r.comparableBasis)} / {won(r.comparableExpense)}</strong></div>
               <div className="stat"><span>비교 제외 (징수 / 지급)</span><strong>{won(r.excludedBasis)} / {won(r.excludedExpense)}</strong></div>
               <div className={`stat ${r.unallocatedTotal ? 'stat--warn' : ''}`}><span>미배분 징수액</span><strong>{won(r.unallocatedTotal)}</strong></div>
-              <div className={`stat ${r.mismatchCount ? 'stat--bad' : ''}`}><span>불일치</span><strong>{won(r.mismatchCount)}건</strong></div>
-              <div className="stat"><span>자료 부족</span><strong>{won(r.missingCount)}건</strong></div>
+              <div className={`stat ${r.linkPendingCount ? 'stat--warn' : ''}`}><span>매핑 확인 필요</span><strong>{won(r.linkPendingCount)}건</strong></div>
+              <div className={`stat ${r.mismatchCount ? 'stat--bad' : ''}`}><span>차액 확인 필요</span><strong>{won(r.mismatchCount)}건</strong></div>
+              <div className="stat"><span>자료 확인 필요</span><strong>{won(r.missingCount)}건</strong></div>
               <div className={`stat ${r.todoCount ? 'stat--warn' : ''}`}><span>확인 필요</span><strong>{won(r.todoCount)}건</strong></div>
             </div>
           )}
@@ -123,9 +126,34 @@ export function MonthlyPage() {
               {recon.isLoading && <span className="spin" />}
               {recon.error && <Notice kind="bad">{errorMessage(recon.error)}</Notice>}
               {r && r.rows.length === 0 && <Empty title="이 달에 귀속된 거래가 없습니다.">자료 업로드에서 징수·지급 파일을 올리면 프로그램별 대조가 여기에 나타납니다.</Empty>}
+              {r && r.linkPendingCount > 0 && (
+                <div className="notice notice--soon" style={{ display: 'block', marginBottom: 8 }}>
+                  <div className="row">
+                    <strong>미매핑 {won(r.linkPendingCount)}건</strong>
+                    <span className="muted">— 세부반(로봇과학A·B)과 통합 프로그램(로봇과학)의 연결이 확정되지 않아 징수액을 합산하지 않았습니다. 원본 금액은 그대로 보이며 차액은 판정하지 않습니다.</span>
+                    <Button size="sm" variant="primary" style={{ marginLeft: 'auto' }} onClick={() => navigate('/programs')}>매핑 관리</Button>
+                  </div>
+                  <div className="tableWrap" style={{ marginTop: 8 }}>
+                    <table className="table">
+                      <thead><tr><th>원본 프로그램명</th><th>항목</th><th className="num">징수 기준액</th><th className="num">지급액</th><th>추천 · 상태</th></tr></thead>
+                      <tbody>
+                        {r.rows.filter((x) => x.status === 'link_pending').map((x) => (
+                          <tr key={`${x.unitId}-${x.itemSet}`}>
+                            <td>{x.unitName}</td>
+                            <td>{x.itemLabel}</td>
+                            <td className="num">{won(x.basis)}</td>
+                            <td className="num">{won(x.expense)}</td>
+                            <td className="wrap" style={{ whiteSpace: 'normal' }}>{x.linkHint}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
               {r && r.rows.length > 0 && <ReconTable rows={r.rows} onOpen={setDetail} />}
               <p className="muted" style={{ margin: '8px 0 0', fontSize: 12 }}>
-                정상 = 비교 가능한 재원이 모두 0원 차액. 자료가 없는 쪽을 0원으로 보지 않으며, 배분·매핑이 끝나지 않은 항목은 차액이 0이어도 정상으로 표시하지 않습니다. 수용비·기타는 대응 지출 자료가 없어 검증 불가입니다.
+                정상 = 비교 가능한 재원이 모두 0원 차액. 자료가 없는 쪽을 0원으로 보지 않으며, 배분·매핑이 끝나지 않은 항목은 차액이 0이어도 정상으로 표시하지 않습니다. 통합 프로그램 행(▸)을 펼치면 합산된 세부반 징수가 보이고 지급은 통합 행에만 있습니다. 수용비·기타는 대응 지출 자료가 없어 검증 불가입니다.
               </p>
             </>
           )}

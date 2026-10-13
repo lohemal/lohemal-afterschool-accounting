@@ -473,7 +473,9 @@ fn build(conn: &Connection, req: &PreviewRequest) -> AppResult<Built> {
             text: text.clone(),
             count: *count,
             suggestion_program_id: s.as_ref().map(|x| x.0),
-            suggestion_name: s.map(|x| x.1).unwrap_or_default(),
+            suggestion_name: s.as_ref().map(|x| x.1.clone()).unwrap_or_default(),
+            suggestion_kind: s.as_ref().map(|x| x.2.clone()).unwrap_or_default(),
+            suggestion_reason: s.map(|x| x.3).unwrap_or_default(),
         });
     }
     let rows: Vec<PreviewRow> = resolved.iter().map(to_preview_row).collect();

@@ -708,7 +708,7 @@ fn h_source_file_cancel_makes_voucher_transfer_orphan_and_schema_v6_survives() {
     assert_eq!(t.db.read(|c| refund_list(c, t.year_id)).unwrap().len(), 1);
     assert_eq!(t.db.read(|c| batch_list(c, t.year_id)).unwrap().len(), 1);
     assert_eq!(crate::db::migrate::current_version(&rusqlite::Connection::open_in_memory().unwrap()).unwrap(), 0);
-    assert_eq!(crate::db::migrate::latest_version(), 9);
+    assert_eq!(crate::db::migrate::latest_version(), 10);
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -1083,8 +1083,8 @@ fn p41_g_v6_policy_survives_v7_migration_with_defaults() {
     c.execute("INSERT INTO voucher_policy (school_year_id, basis, annual_limit, note) VALUES (?1, 'annual', 600000, 'v6 정책')", [y.id]).unwrap();
     let audits_before: i64 = c.query_row("SELECT count(*) FROM audit_log", [], |r| r.get(0)).unwrap();
     migrate::run(&mut c).unwrap();
-    assert_eq!(migrate::current_version(&c).unwrap(), 9);
-    assert_eq!(migrate::latest_version(), 9);
+    assert_eq!(migrate::current_version(&c).unwrap(), migrate::latest_version());
+    assert_eq!(migrate::latest_version(), 10);
     let p = policy_current(&c, y.id).unwrap().unwrap();
     assert_eq!((p.annual_limit, p.note.as_str()), (Some(600_000), "v6 정책"), "기존 정책 보존");
     assert!(p.semester_default && p.all_items_eligible, "기본 학기·모든 항목으로 해석 → 계산 결과 불변");

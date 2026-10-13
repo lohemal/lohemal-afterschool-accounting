@@ -73,6 +73,7 @@ impl T {
                 group_id: None,
                 new_name: None,
                 member_ids: None,
+                parent_id: None,
             };
             self.db.write(|tx| program::map_save(tx, &input)).unwrap();
         }
@@ -380,7 +381,7 @@ fn roster_upload_requires_program_mapping_and_reuses_rules() {
     // 사용자가 확정: 코딩A·코딩B → 코딩, 나머지는 새 프로그램
     let coding = t.db.read(|c| program::resolve(c, t.year_id, "코딩")).unwrap().unwrap();
     for alias in ["코딩A", "코딩B"] {
-        let input = ProgramMapInput { school_year_id: t.year_id, alias: alias.into(), target: "program".into(), program_id: Some(coding), group_id: None, new_name: None, member_ids: None };
+        let input = ProgramMapInput { school_year_id: t.year_id, alias: alias.into(), target: "program".into(), program_id: Some(coding), group_id: None, new_name: None, member_ids: None, parent_id: None };
         t.db.write(|tx| program::map_save(tx, &input)).unwrap();
     }
     t.map_new(&["로봇과학A", "항공드론A"]);
@@ -437,7 +438,7 @@ fn instructor_group_row_lands_on_a_program_group() {
     t.map_new(&["코딩", "로봇과학", "항공드론", "우쿨렐레", "통기타"]);
     let uk = t.db.read(|c| program::resolve(c, t.year_id, "우쿨렐레")).unwrap().unwrap();
     let gt = t.db.read(|c| program::resolve(c, t.year_id, "통기타")).unwrap().unwrap();
-    let g = ProgramMapInput { school_year_id: t.year_id, alias: "우쿨렐레&통기타".into(), target: "new_group".into(), program_id: None, group_id: None, new_name: None, member_ids: Some(vec![uk, gt]) };
+    let g = ProgramMapInput { school_year_id: t.year_id, alias: "우쿨렐레&통기타".into(), target: "new_group".into(), program_id: None, group_id: None, new_name: None, member_ids: Some(vec![uk, gt]), parent_id: None };
     t.db.write(|tx| program::map_save(tx, &g)).unwrap();
     let req = t.req("instructor_pay.xlsx", "instructor_pay", "instructor_pay");
     let p = t.preview(&req);

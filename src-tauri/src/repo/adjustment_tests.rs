@@ -341,7 +341,7 @@ fn e_replacing_the_source_file_flags_linked_adjustments_as_orphan() {
     let d = dir.path().to_path_buf();
     // 통합 매니저 명단 가명 파일을 최초 징수로 올린다 (코딩A 등 매핑)
     for n in ["코딩A", "코딩B", "로봇과학A", "항공드론A"] {
-        t.db.write(|tx| program::map_save(tx, &ProgramMapInput { school_year_id: t.year_id, alias: n.into(), target: "program".into(), program_id: Some(t.coding), group_id: None, new_name: None, member_ids: None })).unwrap();
+        t.db.write(|tx| program::map_save(tx, &ProgramMapInput { school_year_id: t.year_id, alias: n.into(), target: "program".into(), program_id: Some(t.coding), group_id: None, new_name: None, member_ids: None, parent_id: None })).unwrap();
     }
     let req = |file: &str, replace: Option<i64>| PreviewRequest {
         path: crate::excel::fixtures_dir().join(file).display().to_string(), school_year_id: t.year_id, fiscal_month_id: t.sep,

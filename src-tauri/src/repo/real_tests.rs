@@ -65,6 +65,7 @@ impl T {
                     group_id: None,
                     new_name: Some(base),
                     member_ids: None,
+                    parent_id: None,
                 };
                 self.db.write(|tx| program::map_save(tx, &input)).unwrap();
             }
@@ -121,7 +122,7 @@ fn real_september_recon() {
     t.commit(&vend);
     let r1 = t.print_recon("시나리오 1 — 징수명단(기안용) 기준 (학생 식별 불가 → 전부 배분 미확정)");
     assert_eq!(r1.unallocated_total, 25_734_600);
-    assert!(r1.rows.iter().filter(|r| r.item_set == "instructor" || r.item_set == "textbook_material").all(|r| r.status == "unallocated" || r.status == "group_only"), "미배분이 남아 있는 동안 정상 판정이 나오면 안 된다");
+    assert!(r1.rows.iter().filter(|r| r.item_set == "instructor" || r.item_set == "textbook_material").all(|r| matches!(r.status.as_str(), "unallocated" | "group_only" | "link_pending")), "미배분이 남아 있는 동안 정상 판정이 나오면 안 된다 (P7-1.1: '토탈공예미니어처1' 처럼 세부반 추천이 걸린 행은 매핑 확인 필요가 먼저)");
     assert_eq!(r1.expenditure_total, 27_329_000 + 9_987_700);
 
     // ── 시나리오 2: 2학기 운영 — 통합 매니저 명단(최초 징수 시점)을 최초 징수 기준으로 ─────
@@ -241,10 +242,126 @@ impl T {
                     };
                     ids.push(id);
                 }
-                let input = ProgramMapInput { school_year_id: self.year_id, alias: u.text.clone(), target: "new_group".into(), program_id: None, group_id: None, new_name: None, member_ids: Some(ids) };
+                let input = ProgramMapInput { school_year_id: self.year_id, alias: u.text.clone(), target: "new_group".into(), program_id: None, group_id: None, new_name: None, member_ids: Some(ids), parent_id: None };
                 self.db.write(|tx| program::map_save(tx, &input)).unwrap();
             }
         }
         self.map_all(req);
     }
+}
+
+// ── P7-1.1: 세부반 → 통합 프로그램 연결로 실제 9월 자료를 다시 검증 ─────────────────
+//
+//   ASACCOUNTING_REAL_DIR="C:/Users/monmi/Documents/방과후 회계 자동화" cargo test --lib real_september_links -- --ignored --nocapture
+//
+//   시나리오 2 와 같은 파일이지만, 반 접미가 붙은 명단 표기를 통합 프로그램의 별칭으로 합치지 않고
+//   **세부반 프로그램으로 등록**한 뒤 (1) 연결 전 (2) 자동 추천 (3) 추천 확정 후 의 검증 결과를 비교한다.
+//   실제 자료에 자동으로 매핑을 확정하지 않는다 — 메모리 DB 에서만 돈다. 학생 이름은 파일에 없고 출력에도 없다.
+
+impl T {
+    /// 미리보기의 모르는 표기를 전부 **그 이름 그대로** 새 프로그램으로 등록한다 (세부반 유지, 그룹 표기는 그룹으로).
+    fn map_all_verbatim(&self, req: &PreviewRequest) {
+        loop {
+            let p = self.db.read(|c| upload::preview(c, req)).unwrap();
+            if p.unresolved_programs.is_empty() {
+                break;
+            }
+            for u in &p.unresolved_programs {
+                if u.text.contains('&') {
+                    let mut ids = Vec::new();
+                    for part in u.text.split('&') {
+                        let name = part.trim();
+                        let id = match self.db.read(|c| program::resolve(c, self.year_id, name)).unwrap() {
+                            Some(id) => id,
+                            None => self.db.write(|tx| program::create(tx, self.year_id, name)).unwrap(),
+                        };
+                        ids.push(id);
+                    }
+                    let input = ProgramMapInput { school_year_id: self.year_id, alias: u.text.clone(), target: "new_group".into(), program_id: None, group_id: None, new_name: None, member_ids: Some(ids), parent_id: None };
+                    self.db.write(|tx| program::map_save(tx, &input)).unwrap();
+                    continue;
+                }
+                let input = ProgramMapInput { school_year_id: self.year_id, alias: u.text.clone(), target: "new_program".into(), program_id: None, group_id: None, new_name: None, member_ids: None, parent_id: None };
+                self.db.write(|tx| program::map_save(tx, &input)).unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore]
+fn real_september_links() {
+    use crate::repo::program_link;
+    let t = setup();
+    // 지급 파일 먼저 (통합 프로그램명이 생긴다), 그다음 명단 (세부반 표기 그대로)
+    let instr = t.req("2026학년도 9월 방과후프로그램 강사료 내역 양식.xlsx", "instructor_pay", "instructor_pay");
+    t.map_all_verbatim(&instr);
+    t.commit(&instr);
+    let vend = t.req("2026학년도 방과후프로그램 9월 교재,재료비 지급업체.xlsx", "vendor_pay", "vendor_pay");
+    t.map_all_verbatim(&vend);
+    t.commit(&vend);
+    let roster = t.req("수강생명단(방과후 통합 매니저 9월부터).xlsx", "roster_manager", "initial_collect");
+    let p0 = t.db.read(|c| upload::preview(c, &roster)).unwrap();
+    println!("\n## 1. 원본 프로그램명 (명단 표기 중 지급 파일에 없는 것 {}개)", p0.unresolved_programs.len());
+    let mut names: Vec<String> = p0.unresolved_programs.iter().map(|u| format!("{}({}행{})", u.text, u.count, if u.suggestion_kind == "child" { format!(" → 세부반 제안: {}", u.suggestion_name) } else { String::new() })).collect();
+    names.sort();
+    println!("{}", names.join(" · "));
+    let child_suggested = p0.unresolved_programs.iter().filter(|u| u.suggestion_kind == "child").count();
+    println!("업로드 단계 세부반 제안 {}개 (확정은 사용자)", child_suggested);
+    t.map_all_verbatim(&roster);
+    t.commit(&roster);
+
+    // (1) 연결 전
+    let r1 = t.print_recon("2. 연결 전 — 세부반을 그대로 등록 (지급은 통합명, 징수는 세부반명)");
+    let b1 = t.db.read(|c| program_link::board(c, t.year_id)).unwrap();
+    println!("\n## 3. 자동 추천: 추천 {}건 · 후보(조건 미충족) {}건 · 프로그램 {}개", b1.pending_count, b1.candidate_count, b1.rows.len());
+    for r in b1.rows.iter().filter(|r| r.suggestion.is_some()) {
+        let s = r.suggestion.as_ref().unwrap();
+        println!("  {} → {} [{}] {}", r.name, s.parent_name, r.status_label, s.reason);
+    }
+    let unmapped_before = r1.link_pending_count;
+    println!("미매핑(매핑 확인 필요) 행 {}건 · 자료 확인 필요 {}건 · 차액 확인 {}건", unmapped_before, r1.missing_count, r1.mismatch_count);
+    assert!(b1.pending_count > 0, "실제 자료에서 추천이 나와야 한다");
+    assert!(r1.rows.iter().filter(|r| r.status == "link_pending").all(|r| r.basis >= 0 || r.expense >= 0), "원본 금액 표시");
+
+    // (3) 추천 확정 (시험 전용 — 실제 운영에서는 사용자가 화면에서 확정한다)
+    let items: Vec<crate::model::LinkItem> = b1.rows.iter().filter(|r| r.status == "suggested").map(|r| crate::model::LinkItem { program_id: r.program_id, parent_id: Some(r.suggestion.as_ref().unwrap().parent_id) }).collect();
+    let pv = t.db.read(|c| program_link::preview(c, t.year_id, &items)).unwrap();
+    assert!(!pv.blocked, "{:?}", pv.block_reasons);
+    println!("\n## 4. 추천 {}건 일괄 확정 미리보기: 영향 달 {} · 경고 {}건", items.len(), pv.months.iter().map(|m| m.label.clone()).collect::<Vec<_>>().join(","), pv.items.iter().map(|i| i.warnings.len()).sum::<usize>());
+    for i in pv.items.iter().filter(|i| !i.warnings.is_empty()) {
+        println!("  {}: {}", i.program_name, i.warnings.join(" / "));
+    }
+    t.db.write(|tx| program_link::apply(tx, t.year_id, &items, "실제 자료 시험 (메모리 DB)", "suggested")).unwrap();
+    let r2 = t.print_recon("5. 추천 확정 후 — 통합 프로그램 기준 대조");
+    assert_eq!(r2.link_pending_count, 0);
+    assert_eq!(r2.collection_total, r1.collection_total, "연결은 징수 총액을 바꾸지 않는다");
+    assert_eq!(r2.expenditure_total, r1.expenditure_total, "연결은 지급 총액을 바꾸지 않는다");
+    assert_eq!(r2.expenditure_total, 27_329_000 + 9_987_700);
+    assert!(r2.rows.len() < r1.rows.len(), "세부반 행이 통합 행 아래로 들어간다");
+
+    println!("\n## 6. 지시서 지정 프로그램 — 연결 전후 비교");
+    println!("| 프로그램 | 항목 | 전: 징수 | 전: 지급 | 전: 상태 | 후: 징수 기준액 | 후: 지급액 | 후: 차액 | 후: 상태 | 세부반 |");
+    println!("|---|---|---:|---:|---|---:|---:|---:|---|---|");
+    for name in ["금요방송댄스", "로봇과학", "만화애니메이션", "난타와사물놀이", "코딩"] {
+        for set in ["instructor", "textbook_material"] {
+            let after = r2.rows.iter().find(|r| r.unit_name == name && r.item_set == set);
+            let Some(after) = after else { continue };
+            let before = r1.rows.iter().find(|r| r.unit_name == name && r.item_set == set);
+            let (bb, be, bs) = before.map(|b| (w(b.basis), w(b.expense), b.status_label.clone())).unwrap_or_else(|| ("—".into(), "—".into(), "(행 없음)".into()));
+            let diff = if after.status == "ok" || after.status == "mismatch" { w(after.diff) } else { "—".into() };
+            let kids: Vec<String> = after.children.iter().map(|c| format!("{} {}", c.program_name, w(c.basis))).collect();
+            println!("| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |", name, after.item_label, bb, be, bs, w(after.basis), w(after.expense), diff, after.status_label, kids.join(" · "));
+        }
+    }
+    let ok_after = r2.rows.iter().filter(|r| r.status == "ok").count();
+    let ok_before = r1.rows.iter().filter(|r| r.status == "ok").count();
+    println!("\n정상 판정: 연결 전 {}건 → 후 {}건 · 매핑 확인 필요 {} → {} · 자료 확인 필요 {} → {} · 차액 확인 {} → {}", ok_before, ok_after, r1.link_pending_count, r2.link_pending_count, r1.missing_count, r2.missing_count, r1.mismatch_count, r2.mismatch_count);
+    // 무결성: 연결 뒤 오류 0
+    let tmp = tempfile::tempdir().unwrap();
+    let rep = t.db.read(|c| crate::repo::integrity::run(c, tmp.path(), t.year_id)).unwrap();
+    println!("무결성: 정상 {} · 확인 필요 {} · 오류 {}", rep.ok_count, rep.check_count, rep.error_count);
+    assert_eq!(rep.error_count, 0, "{:?}", rep.items.iter().filter(|i| i.level == "error").map(|i| &i.detail).collect::<Vec<_>>());
+    let h = t.db.read(|c| program_link::history(c, t.year_id)).unwrap();
+    assert_eq!(h.len(), items.len());
 }

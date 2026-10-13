@@ -69,13 +69,13 @@ impl T {
     fn upload_fixture(&self) -> UploadFile {
         let path = crate::excel::fixtures_dir().join("instructor_pay.xlsx");
         let sep = self.m(7);
-        self.db.write(|tx| program::map_save(tx, &ProgramMapInput { school_year_id: self.year_id, alias: "코딩".into(), target: "program".into(), program_id: Some(self.coding), group_id: None, new_name: None, member_ids: None }).map(|_| ())).unwrap();
+        self.db.write(|tx| program::map_save(tx, &ProgramMapInput { school_year_id: self.year_id, alias: "코딩".into(), target: "program".into(), program_id: Some(self.coding), group_id: None, new_name: None, member_ids: None, parent_id: None }).map(|_| ())).unwrap();
         for n in ["로봇과학", "항공드론", "우쿨렐레", "통기타"] {
-            self.db.write(|tx| program::map_save(tx, &ProgramMapInput { school_year_id: self.year_id, alias: n.into(), target: "new_program".into(), program_id: None, group_id: None, new_name: Some(n.into()), member_ids: None }).map(|_| ())).unwrap();
+            self.db.write(|tx| program::map_save(tx, &ProgramMapInput { school_year_id: self.year_id, alias: n.into(), target: "new_program".into(), program_id: None, group_id: None, new_name: Some(n.into()), member_ids: None, parent_id: None }).map(|_| ())).unwrap();
         }
         let uk = self.db.read(|c| program::resolve(c, self.year_id, "우쿨렐레")).unwrap().unwrap();
         let gt = self.db.read(|c| program::resolve(c, self.year_id, "통기타")).unwrap().unwrap();
-        self.db.write(|tx| program::map_save(tx, &ProgramMapInput { school_year_id: self.year_id, alias: "우쿨렐레&통기타".into(), target: "new_group".into(), program_id: None, group_id: None, new_name: None, member_ids: Some(vec![uk, gt]) }).map(|_| ())).unwrap();
+        self.db.write(|tx| program::map_save(tx, &ProgramMapInput { school_year_id: self.year_id, alias: "우쿨렐레&통기타".into(), target: "new_group".into(), program_id: None, group_id: None, new_name: None, member_ids: Some(vec![uk, gt]), parent_id: None }).map(|_| ())).unwrap();
         let req = PreviewRequest { path: path.display().to_string(), school_year_id: self.year_id, fiscal_month_id: sep, format_code: "instructor_pay".into(), data_kind: "instructor_pay".into(), overrides: vec![], replace_file_id: None, note: None };
         let pv = self.db.read(|c| upload::preview(c, &req)).unwrap();
         assert!(pv.can_commit, "{:?}", pv.block_reasons);
@@ -744,7 +744,7 @@ fn p6_d_v8_close_history_survives_v9_and_reads_as_legacy() {
     c.execute("INSERT INTO month_close (fiscal_month_id, action, totals_json, note) VALUES (?1, 'close', '{}', 'v8 확정')", [m]).unwrap();
     c.execute("UPDATE fiscal_month SET status = 'closed' WHERE id = ?1", [m]).unwrap();
     migrate::run(&mut c).unwrap();
-    assert_eq!(migrate::current_version(&c).unwrap(), 9);
+    assert_eq!(migrate::current_version(&c).unwrap(), migrate::latest_version());
     let ch = year::month_changes(&c, m).unwrap();
     assert!(!ch.has_fingerprint && !ch.changed && ch.summary.contains("옛 확정"));
     let n: i64 = c.query_row("SELECT count(*) FROM month_close", [], |r| r.get(0)).unwrap();

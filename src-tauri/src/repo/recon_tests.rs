@@ -79,7 +79,7 @@ fn scenario_e_f_match_and_mismatch() {
     assert_eq!((ra.status.as_str(), ra.basis, ra.expense, ra.diff), ("ok", 500_000, 500_000, 0));
     let rb = t.row(&r, "로봇과학", "instructor");
     assert_eq!((rb.status.as_str(), rb.diff), ("mismatch", 20_000));
-    assert_eq!(rb.status_label, "불일치");
+    assert_eq!(rb.status_label, "차액 확인 필요");
     assert_eq!(r.mismatch_count, 1);
     assert_eq!(r.comparable_basis, 1_000_000);
     assert_eq!(r.comparable_expense, 980_000);
@@ -245,9 +245,9 @@ fn scenario_k_note_survives_and_needs_recheck_when_data_changes() {
 fn scenario_l_detail_traces_entries_to_source_rows_and_keeps_voided_history() {
     let t = setup();
     // 실제 업로드로 거래를 만들어 원본 행까지 잇는다.
-    t.db.write(|tx| program::map_save(tx, &ProgramMapInput { school_year_id: t.year_id, alias: "코딩".into(), target: "new_program".into(), program_id: None, group_id: None, new_name: None, member_ids: None })).unwrap();
+    t.db.write(|tx| program::map_save(tx, &ProgramMapInput { school_year_id: t.year_id, alias: "코딩".into(), target: "new_program".into(), program_id: None, group_id: None, new_name: None, member_ids: None, parent_id: None })).unwrap();
     for n in ["로봇과학", "항공드론", "우쿨렐레&통기타"] {
-        t.db.write(|tx| program::map_save(tx, &ProgramMapInput { school_year_id: t.year_id, alias: n.into(), target: "new_program".into(), program_id: None, group_id: None, new_name: None, member_ids: None })).unwrap();
+        t.db.write(|tx| program::map_save(tx, &ProgramMapInput { school_year_id: t.year_id, alias: n.into(), target: "new_program".into(), program_id: None, group_id: None, new_name: None, member_ids: None, parent_id: None })).unwrap();
     }
     let dir = tempfile::tempdir().unwrap();
     let req = PreviewRequest { path: fixtures_dir().join("instructor_pay.xlsx").display().to_string(), school_year_id: t.year_id, fiscal_month_id: t.sep, format_code: "instructor_pay".into(), data_kind: "instructor_pay".into(), overrides: vec![], replace_file_id: None, note: None };
@@ -287,7 +287,7 @@ fn scenario_i_j_replace_and_restore_recompute_allocations_and_diffs() {
     let v1 = t.db.write(|tx| upload::commit(tx, &d, &req(&t, "collect_initial.xlsx", "collect_initial", "initial_collect", None))).unwrap();
     // 2. 프로그램별 수강생명단(roster_link) → 자동 배분
     for n in ["코딩A", "코딩B", "로봇과학A", "항공드론A"] {
-        t.db.write(|tx| program::map_save(tx, &ProgramMapInput { school_year_id: t.year_id, alias: n.into(), target: "new_program".into(), program_id: None, group_id: None, new_name: None, member_ids: None })).unwrap();
+        t.db.write(|tx| program::map_save(tx, &ProgramMapInput { school_year_id: t.year_id, alias: n.into(), target: "new_program".into(), program_id: None, group_id: None, new_name: None, member_ids: None, parent_id: None })).unwrap();
     }
     t.db.write(|tx| upload::commit(tx, &d, &req(&t, "roster_manager.xlsx", "roster_manager", "roster_link", None))).unwrap();
     let a = t.db.write(|tx| allocation::auto_allocate(tx, t.sep)).unwrap();

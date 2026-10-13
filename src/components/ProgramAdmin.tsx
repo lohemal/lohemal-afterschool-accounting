@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 
 import { Button, Card, Empty, Notice, useToast } from '@/components/ui'
 import { api, errorMessage } from '@/ipc/api'
@@ -36,6 +37,7 @@ export function ProgramAdmin({ yearId }: { yearId: number }) {
     <Card title="프로그램 · 표기 별칭 · 그룹">
       <p className="muted" style={{ margin: '0 0 10px' }}>
         파일마다 다른 표기('코딩A' / '코딩')를 대표 프로그램에 잇습니다. 비슷한 이름을 자동으로 합치지 않으며, 여기서 확정한 규칙만 업로드에 쓰입니다. 두 프로그램이 한 지출 행에 합산된 표기('우쿨렐레&통기타')는 그룹으로 둡니다.
+        세부반('로봇과학A')과 통합 프로그램('로봇과학')의 연결은 <Link to="/programs">프로그램 매핑</Link>에서 관리합니다.
       </p>
       {programs.error && <Notice kind="bad">{errorMessage(programs.error)}</Notice>}
       {programs.data && programs.data.length === 0 && <Empty title="등록된 프로그램이 없습니다.">첫 업로드의 미리보기에서 표기를 확정하면 여기에 쌓입니다.</Empty>}
@@ -45,6 +47,7 @@ export function ProgramAdmin({ yearId }: { yearId: number }) {
             <thead>
               <tr>
                 <th>프로그램</th>
+                <th>통합 · 세부반</th>
                 <th>파일 표기(별칭)</th>
                 <th className="num">유효 거래</th>
               </tr>
@@ -53,6 +56,11 @@ export function ProgramAdmin({ yearId }: { yearId: number }) {
               {programs.data.map((p) => (
                 <tr key={p.id}>
                   <td>{p.name}</td>
+                  <td>
+                    {p.childCount > 0 && <span className="badge badge--navy">통합 · 세부반 {p.childCount}개</span>}
+                    {p.parentName && <span className="muted">→ {p.parentName} 의 세부반</span>}
+                    {p.childCount === 0 && !p.parentName && <span className="muted">—</span>}
+                  </td>
                   <td>
                     <div className="chips">
                       {p.aliases.map((a) => (

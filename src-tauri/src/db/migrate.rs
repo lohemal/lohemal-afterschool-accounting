@@ -87,6 +87,13 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../migrations/009_close_fingerprint.sql"),
         fk_off: false,
     },
+    // 세부반 → 통합 프로그램 연결표·이력. 기존 표는 건드리지 않는다.
+    Migration {
+        version: 10,
+        name: "010_program_link",
+        sql: include_str!("../../migrations/010_program_link.sql"),
+        fk_off: false,
+    },
 ];
 
 pub fn latest_version() -> i32 {

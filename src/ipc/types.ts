@@ -79,6 +79,9 @@ export interface Program {
   isActive: boolean
   aliases: string[]
   entryCount: number
+  parentId: number | null
+  parentName: string | null
+  childCount: number
 }
 
 export interface ProgramGroup {
@@ -93,11 +96,13 @@ export interface ProgramGroup {
 export interface ProgramMapInput {
   schoolYearId: number
   alias: string
-  target: 'program' | 'group' | 'new_program' | 'new_group'
+  target: 'program' | 'group' | 'new_program' | 'new_group' | 'new_child'
   programId?: number | null
   groupId?: number | null
   newName?: string | null
   memberIds?: number[] | null
+  /** target = new_child: 새 세부반을 이 통합 프로그램에 연결 */
+  parentId?: number | null
 }
 
 export type UploadStatus = 'registered' | 'previewed' | 'applied' | 'cancelled' | 'replaced'
@@ -227,6 +232,9 @@ export interface UnresolvedProgram {
   count: number
   suggestionProgramId: number | null
   suggestionName: string
+  /** child(세부반으로 등록해 통합 프로그램에 연결) · alias(표기만 잇기) · '' */
+  suggestionKind: 'child' | 'alias' | ''
+  suggestionReason: string
 }
 
 export interface UnresolvedFund {
@@ -431,7 +439,7 @@ export interface ManualPart {
   amount: number
 }
 
-export type ReconStatus = 'ok' | 'mismatch' | 'missing' | 'unallocated' | 'unmapped' | 'unverifiable' | 'group_only' | 'orphan'
+export type ReconStatus = 'ok' | 'mismatch' | 'missing' | 'unallocated' | 'unmapped' | 'unverifiable' | 'group_only' | 'orphan' | 'link_pending'
 export type NoteStatus = 'none' | 'todo' | 'investigating' | 'explained'
 
 export interface FundLine {
@@ -485,6 +493,23 @@ export interface ReconRow {
   noteLabel: string
   needsRecheck: boolean
   fingerprint: string
+  /** 통합 프로그램(세부반 합산) 행 */
+  isParent: boolean
+  children: ReconChild[]
+  linkPending: boolean
+  linkHint: string
+}
+
+export interface ReconChild {
+  programId: number
+  programName: string
+  direct: boolean
+  initial: number
+  extra: number
+  refund: number
+  basis: number
+  expense: number
+  entryCount: number
 }
 
 export interface MonthRecon {
@@ -500,6 +525,7 @@ export interface MonthRecon {
   todoCount: number
   mismatchCount: number
   missingCount: number
+  linkPendingCount: number
   rows: ReconRow[]
 }
 
@@ -1280,4 +1306,107 @@ export interface AfterVoucherTargetInput {
   evidence?: string
   note?: string
   reason?: string
+}
+
+// ── P7-1.1: 세부반 → 통합 프로그램 연결 ─────────────────────────────────────
+
+export interface LinkSuggestion {
+  programId: number
+  programName: string
+  parentId: number
+  parentName: string
+  recommended: boolean
+  reason: string
+}
+
+export interface LinkRow {
+  programId: number
+  name: string
+  role: 'parent' | 'child' | 'none'
+  parentId: number | null
+  parentName: string | null
+  linkedAt: string | null
+  rule: string
+  groupName: string | null
+  childNames: string[]
+  suggestion: LinkSuggestion | null
+  status: 'confirmed' | 'suggested' | 'candidate' | 'none'
+  statusLabel: string
+  collectionCount: number
+  collectionTotal: number
+  expenseCount: number
+  expenseTotal: number
+  aliases: string[]
+}
+
+export interface LinkParentView {
+  parentId: number
+  name: string
+  children: LinkRow[]
+  expenseTotal: number
+  collectionTotal: number
+}
+
+export interface LinkBoard {
+  schoolYearId: number
+  rows: LinkRow[]
+  parents: LinkParentView[]
+  pendingCount: number
+  confirmedCount: number
+  candidateCount: number
+}
+
+export interface LinkItem {
+  programId: number
+  parentId: number | null
+}
+
+export interface LinkPreviewItem {
+  programId: number
+  programName: string
+  fromParentId: number | null
+  fromParentName: string | null
+  toParentId: number | null
+  toParentName: string | null
+  action: 'confirm' | 'change' | 'unlink' | 'noop'
+  actionLabel: string
+  collectionTotal: number
+  expenseTotal: number
+  warnings: string[]
+  errors: string[]
+}
+
+export interface LinkMonthImpact {
+  fiscalMonthId: number
+  label: string
+  closed: boolean
+  programNames: string[]
+}
+
+export interface LinkPreview {
+  items: LinkPreviewItem[]
+  months: LinkMonthImpact[]
+  blocked: boolean
+  blockReasons: string[]
+  warnings: string[]
+  changeCount: number
+}
+
+export interface LinkApplyResult {
+  applied: number
+  logIds: number[]
+}
+
+export interface LinkLog {
+  id: number
+  at: string
+  programId: number
+  programName: string
+  fromParentName: string | null
+  toParentName: string | null
+  action: string
+  actionLabel: string
+  rule: string
+  confirmed: boolean
+  note: string
 }

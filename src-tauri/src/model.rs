@@ -102,6 +102,11 @@ pub struct Program {
     pub is_active: bool,
     pub aliases: Vec<String>,
     pub entry_count: i64,
+    /// 세부반이면 통합 프로그램 id
+    pub parent_id: Option<i64>,
+    pub parent_name: Option<String>,
+    /// 통합 프로그램이면 세부반 수
+    pub child_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -126,6 +131,9 @@ pub struct ProgramMapInput {
     pub group_id: Option<i64>,
     pub new_name: Option<String>,
     pub member_ids: Option<Vec<i64>>,
+    /// target = new_child: 새 세부반을 만들어 이 통합 프로그램에 연결(확정)한다
+    #[serde(default)]
+    pub parent_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -271,6 +279,9 @@ pub struct UnresolvedProgram {
     pub count: i64,
     pub suggestion_program_id: Option<i64>,
     pub suggestion_name: String,
+    /// child(세부반으로 등록해 통합 프로그램에 연결) · alias(표기만 잇기) · 빈 문자열(제안 없음)
+    pub suggestion_kind: String,
+    pub suggestion_reason: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -635,6 +646,13 @@ pub struct ReconRow {
     pub note_label: String,
     pub needs_recheck: bool,
     pub fingerprint: String,
+    /// 통합 프로그램(세부반을 합산한 행)인가
+    pub is_parent: bool,
+    /// 펼쳐 보이는 세부반 줄 (직접 귀속 줄 포함)
+    pub children: Vec<ReconChild>,
+    /// 매핑 확인 필요: 이 프로그램이 추천 세부반이거나 추천 통합 프로그램인데 아직 확정되지 않음
+    pub link_pending: bool,
+    pub link_hint: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -653,6 +671,8 @@ pub struct MonthRecon {
     pub todo_count: i64,
     pub mismatch_count: i64,
     pub missing_count: i64,
+    /// 매핑 확인 필요 행 수
+    pub link_pending_count: i64,
     pub rows: Vec<ReconRow>,
 }
 
@@ -1627,4 +1647,149 @@ pub struct AfterVoucherTargetInput {
     pub note: String,
     #[serde(default)]
     pub reason: String,
+}
+
+// ── P7-1.1: 세부반 → 통합 프로그램 연결 ─────────────────────────────────────
+
+/// 자동 추천 후보. `recommended` 가 거짓이면 이름 규칙에는 맞지만 추천 조건(대응 지급 자료 등)을 못 채운 것.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkSuggestion {
+    pub program_id: i64,
+    pub program_name: String,
+    pub parent_id: i64,
+    pub parent_name: String,
+    pub recommended: bool,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkRow {
+    pub program_id: i64,
+    pub name: String,
+    /// parent(통합 프로그램) · child(세부반) · none
+    pub role: String,
+    pub parent_id: Option<i64>,
+    pub parent_name: Option<String>,
+    pub linked_at: Option<String>,
+    pub rule: String,
+    pub group_name: Option<String>,
+    pub child_names: Vec<String>,
+    pub suggestion: Option<LinkSuggestion>,
+    /// confirmed(확정) · suggested(추천) · candidate(이름 규칙만) · none
+    pub status: String,
+    pub status_label: String,
+    pub collection_count: i64,
+    pub collection_total: i64,
+    pub expense_count: i64,
+    pub expense_total: i64,
+    pub aliases: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkParentView {
+    pub parent_id: i64,
+    pub name: String,
+    pub children: Vec<LinkRow>,
+    pub expense_total: i64,
+    pub collection_total: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkBoard {
+    pub school_year_id: i64,
+    pub rows: Vec<LinkRow>,
+    pub parents: Vec<LinkParentView>,
+    pub pending_count: i64,
+    pub confirmed_count: i64,
+    pub candidate_count: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkItem {
+    pub program_id: i64,
+    /// None = 연결 해제
+    pub parent_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkPreviewItem {
+    pub program_id: i64,
+    pub program_name: String,
+    pub from_parent_id: Option<i64>,
+    pub from_parent_name: Option<String>,
+    pub to_parent_id: Option<i64>,
+    pub to_parent_name: Option<String>,
+    /// confirm · change · unlink · noop
+    pub action: String,
+    pub action_label: String,
+    pub collection_total: i64,
+    pub expense_total: i64,
+    pub warnings: Vec<String>,
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkMonthImpact {
+    pub fiscal_month_id: i64,
+    pub label: String,
+    pub closed: bool,
+    pub program_names: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkPreview {
+    pub items: Vec<LinkPreviewItem>,
+    pub months: Vec<LinkMonthImpact>,
+    pub blocked: bool,
+    pub block_reasons: Vec<String>,
+    pub warnings: Vec<String>,
+    pub change_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkApplyResult {
+    pub applied: i64,
+    pub log_ids: Vec<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkLog {
+    pub id: i64,
+    pub at: String,
+    pub program_id: i64,
+    pub program_name: String,
+    pub from_parent_name: Option<String>,
+    pub to_parent_name: Option<String>,
+    pub action: String,
+    pub action_label: String,
+    pub rule: String,
+    pub confirmed: bool,
+    pub note: String,
+}
+
+/// 통합 프로그램 행 아래 펼쳐 보이는 세부반 줄 (지급은 통합 행에만 있으므로 여기 중복 표시하지 않는다).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReconChild {
+    pub program_id: i64,
+    pub program_name: String,
+    /// 통합 프로그램 자신에게 직접 귀속된 징수인가
+    pub direct: bool,
+    pub initial: i64,
+    pub extra: i64,
+    pub refund: i64,
+    pub basis: i64,
+    /// 세부반에 직접 연결된 지급 (보통 0 — 있으면 확인 대상)
+    pub expense: i64,
+    pub entry_count: i64,
 }

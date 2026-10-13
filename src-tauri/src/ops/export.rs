@@ -80,7 +80,7 @@ pub fn recon_month(conn: &Connection, data_dir: &Path, fiscal_month_id: i64, fil
         year::get(conn, yid)?.name
     };
     let status = filter.status.clone().unwrap_or_else(|| "all".into());
-    let attention = ["unallocated", "unmapped", "orphan", "mismatch", "missing"];
+    let attention = ["link_pending", "unallocated", "unmapped", "orphan", "mismatch", "missing"];
     let rows: Vec<&ReconRow> = r
         .rows
         .iter()
@@ -124,6 +124,21 @@ pub fn recon_month(conn: &Connection, data_dir: &Path, fiscal_month_id: i64, fil
             s.num(7, f.diff.unwrap_or(f.basis.unwrap_or(0) - f.expense.unwrap_or(0)))?;
             s.text(8, if i == 0 { &x.status_label } else { "" })?;
             s.text(9, if i == 0 { memo.as_str() } else { "" })?;
+            s.next();
+            n += 1;
+        }
+        // 통합 프로그램 행 아래 세부반 줄 (지급은 통합 행에만 — 중복 합산 없음)
+        for ch in &x.children {
+            s.text(0, &y)?;
+            s.text(1, &m)?;
+            s.text(2, &format!("  └ {}", ch.program_name))?;
+            s.text(3, &x.item_label)?;
+            s.text(4, if ch.direct { "직접 귀속" } else { "세부반" })?;
+            s.num(5, ch.basis)?;
+            s.num(6, ch.expense)?;
+            s.text(7, "")?;
+            s.text(8, "세부반 (통합 행에 합산됨)")?;
+            s.text(9, "")?;
             s.next();
             n += 1;
         }

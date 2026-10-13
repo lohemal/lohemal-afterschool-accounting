@@ -85,11 +85,21 @@ export function ProgramMapper({
                   <td className="num">{it.count}</td>
                   <td>
                     <select className="select input--sm" value={val} onChange={(e) => setChoice({ ...choice, [it.text]: e.target.value })} style={{ minWidth: 260 }}>
+                      {it.suggestionProgramId !== null && it.suggestionKind === 'child' && (
+                        <option value={`c:${it.suggestionProgramId}`}>제안: 세부반 '{it.text}' 로 등록하고 통합 프로그램 '{it.suggestionName}' 에 연결 ({it.suggestionReason})</option>
+                      )}
                       {it.suggestionProgramId !== null && (
-                        <option value={`p:${it.suggestionProgramId}`}>제안: '{it.suggestionName}' 에 연결 (반 접미만 다름)</option>
+                        <option value={`p:${it.suggestionProgramId}`}>'{it.suggestionName}' 의 표기로 잇기 (세부반 구분 없이 합침{it.suggestionKind === 'alias' ? ` · ${it.suggestionReason}` : ''})</option>
                       )}
                       <option value="new">'{it.text}' 이름으로 새 프로그램 등록</option>
-                      <optgroup label="기존 프로그램에 연결">
+                      <optgroup label="세부반으로 등록하고 통합 프로그램에 연결">
+                        {(programs.data ?? []).filter((p) => p.parentId === null).map((p) => (
+                          <option key={`c${p.id}`} value={`c:${p.id}`}>
+                            세부반 '{it.text}' → {p.name}
+                          </option>
+                        ))}
+                      </optgroup>
+                      <optgroup label="기존 프로그램의 표기로 잇기">
                         {(programs.data ?? []).map((p) => (
                           <option key={p.id} value={`p:${p.id}`}>
                             {p.name}
@@ -119,6 +129,7 @@ export function ProgramMapper({
         </table>
       </div>
       <p className="muted" style={{ margin: '8px 0 0', fontSize: 12 }}>
+        '로봇과학A' 처럼 반이 나뉜 표기는 <strong>세부반</strong>으로 등록하고 통합 프로그램('로봇과학')에 연결하면 학생 징수는 세부반 단위로, 회계 검증은 통합 프로그램 단위로 됩니다 (프로그램 매핑 화면에서 언제든 바꿀 수 있습니다).
         '우쿨렐레&통기타' 처럼 두 프로그램이 합산된 표기는 설정 → 프로그램에서 그룹을 먼저 만든 뒤 그룹에 연결하세요. 그룹 금액은 개별 프로그램에 나누지 않습니다.
       </p>
     </div>
@@ -126,11 +137,13 @@ export function ProgramMapper({
 }
 
 function defaultChoice(it: UnresolvedProgram): string {
-  return it.suggestionProgramId !== null ? `p:${it.suggestionProgramId}` : 'new'
+  if (it.suggestionProgramId === null) return 'new'
+  return it.suggestionKind === 'child' ? `c:${it.suggestionProgramId}` : `p:${it.suggestionProgramId}`
 }
 
 function toInput(schoolYearId: number, alias: string, choice: string): ProgramMapInput | null {
   if (choice === 'new') return { schoolYearId, alias, target: 'new_program' }
+  if (choice.startsWith('c:')) return { schoolYearId, alias, target: 'new_child', parentId: Number(choice.slice(2)) }
   if (choice.startsWith('p:')) return { schoolYearId, alias, target: 'program', programId: Number(choice.slice(2)) }
   if (choice.startsWith('g:')) return { schoolYearId, alias, target: 'group', groupId: Number(choice.slice(2)) }
   return null

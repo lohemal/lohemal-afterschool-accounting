@@ -5,6 +5,7 @@ pub mod adjust;
 pub mod app;
 pub mod catalog;
 pub mod ledger;
+pub mod link;
 pub mod ops;
 pub mod recon;
 pub mod upload;

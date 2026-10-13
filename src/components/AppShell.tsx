@@ -20,6 +20,7 @@ const GROUPS: { label: string; items: Item[] }[] = [
     label: '자료',
     items: [
       { to: '/upload', label: '자료 업로드' },
+      { to: '/programs', label: '프로그램 매핑' },
       { to: '/funds', label: '재원별 관리', soon: true },
     ],
   },

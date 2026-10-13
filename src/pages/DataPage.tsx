@@ -451,7 +451,7 @@ function Export({ yearId }: { yearId: number }) {
           </label>
           <label className="field"><span>검증 상태</span>
             <select className="select" value={status} onChange={(e) => setStatus(e.target.value)}>
-              <option value="all">전체</option><option value="attention">확인이 필요한 것만</option><option value="mismatch">불일치</option><option value="ok">정상</option><option value="missing">자료 부족</option><option value="unallocated">배분 미확정</option><option value="unmapped">매핑 미확정</option><option value="orphan">원본 재확인 필요</option>
+              <option value="all">전체</option><option value="attention">확인이 필요한 것만</option><option value="link_pending">매핑 확인 필요</option><option value="mismatch">차액 확인 필요</option><option value="ok">정상</option><option value="missing">자료 확인 필요</option><option value="unallocated">배분 미확정</option><option value="unmapped">재원 매핑 미확정</option><option value="orphan">원본 재확인 필요</option>
             </select>
           </label>
           <label className="field"><span>항목</span>
