@@ -307,7 +307,7 @@ pub fn map_save(conn: &Connection, input: &ProgramMapInput) -> AppResult<Target>
             crate::repo::program_link::apply(
                 conn,
                 input.school_year_id,
-                &[crate::model::LinkItem { program_id: id, parent_id: Some(parent) }],
+                &[crate::model::LinkItem { program_id: id, parent_id: Some(parent), expected_known: false, expected_parent_id: None }],
                 "업로드 미리보기에서 확정",
                 "suggested",
             )?;

@@ -93,7 +93,7 @@ export function ProgramLinkPage() {
   }
   const b = board.data
   const parentsForPick = (b?.rows ?? []).filter((r) => r.role !== 'child')
-  const suggestedAll: LinkItem[] = (b?.rows ?? []).filter((r) => r.status === 'suggested' && r.suggestion).map((r) => ({ programId: r.programId, parentId: r.suggestion!.parentId }))
+  const suggestedAll: LinkItem[] = (b?.rows ?? []).filter((r) => r.status === 'suggested' && r.suggestion).map((r) => ({ programId: r.programId, parentId: r.suggestion!.parentId, expectedKnown: true, expectedParentId: r.parentId }))
 
   return (
     <Page
@@ -217,7 +217,7 @@ export function ProgramLinkPage() {
                           {p.children.map((c) => (
                             <span className="chip" key={c.programId}>
                               {c.name} <span className="muted">({won(c.collectionTotal)})</span>
-                              <button type="button" title="연결 해제" disabled={busy} onClick={() => setPending({ title: `'${c.name}' 연결 해제`, items: [{ programId: c.programId, parentId: null }], rule: 'manual' })}>×</button>
+                              <button type="button" title="연결 해제" disabled={busy} onClick={() => setPending({ title: `'${c.name}' 연결 해제`, items: [{ programId: c.programId, parentId: null, expectedKnown: true, expectedParentId: c.parentId }], rule: 'manual' })}>×</button>
                             </span>
                           ))}
                         </div>
@@ -328,13 +328,13 @@ function LinkRowView({ r, parents, picked, onPick, busy, onAction }: { r: LinkRo
       <td>
         <span className="row" style={{ gap: 4 }}>
           {r.status === 'suggested' && s && (
-            <Button size="sm" variant="primary" disabled={busy} onClick={() => onAction({ title: `'${r.name}' → '${s.parentName}' 확정`, items: [{ programId: r.programId, parentId: s.parentId }], rule: 'suggested' })}>확정</Button>
+            <Button size="sm" variant="primary" disabled={busy} onClick={() => onAction({ title: `'${r.name}' → '${s.parentName}' 확정`, items: [{ programId: r.programId, parentId: s.parentId, expectedKnown: true, expectedParentId: r.parentId }], rule: 'suggested' })}>확정</Button>
           )}
           {canBeChild && picked && (
-            <Button size="sm" disabled={busy} onClick={() => onAction({ title: `'${r.name}' 연결 ${r.status === 'confirmed' ? '변경' : ''}`, items: [{ programId: r.programId, parentId: Number(picked) }], rule: 'manual' })}>{r.status === 'confirmed' ? '변경…' : '연결…'}</Button>
+            <Button size="sm" disabled={busy} onClick={() => onAction({ title: `'${r.name}' 연결 ${r.status === 'confirmed' ? '변경' : ''}`, items: [{ programId: r.programId, parentId: Number(picked), expectedKnown: true, expectedParentId: r.parentId }], rule: 'manual' })}>{r.status === 'confirmed' ? '변경…' : '연결…'}</Button>
           )}
           {r.status === 'confirmed' && (
-            <Button size="sm" disabled={busy} onClick={() => onAction({ title: `'${r.name}' 연결 해제`, items: [{ programId: r.programId, parentId: null }], rule: 'manual' })}>해제…</Button>
+            <Button size="sm" disabled={busy} onClick={() => onAction({ title: `'${r.name}' 연결 해제`, items: [{ programId: r.programId, parentId: null, expectedKnown: true, expectedParentId: r.parentId }], rule: 'manual' })}>해제…</Button>
           )}
         </span>
       </td>
@@ -417,11 +417,11 @@ function LinkPreviewModal({ yearId, pending, onClose, onApplied }: { yearId: num
           </div>
           {pv.months.length > 0 && (
             <p style={{ margin: '8px 0 0' }}>
-              영향받는 달: {pv.months.map((m) => <span key={m.fiscalMonthId} className={m.closed ? 'badge badge--bad' : 'badge badge--navy'} style={{ marginRight: 4 }}>{m.label}{m.closed ? ' (확정됨)' : ''}</span>)}
-              <span className="muted" style={{ fontSize: 12 }}>— 이 달들의 프로그램별 검증 결과가 다시 계산됩니다. 원장 거래·감사 이력은 바뀌지 않습니다. 확정된 달은 재개한 뒤에만 바꿀 수 있습니다.</span>
+              영향받는 달: {pv.months.map((m) => <span key={m.fiscalMonthId} className={m.closed ? 'badge badge--bad' : 'badge badge--navy'} style={{ marginRight: 4 }} title={`달라지는 검증 행 ${m.changedRows}개 · ${m.programNames.join(', ')}`}>{m.label}{m.closed ? ' (확정됨)' : ''} · {m.changedRows}행</span>)}
+              <span className="muted" style={{ fontSize: 12 }}>— 연결 전후로 검증 결과(프로그램×항목 행)가 실제로 달라지는 달만 표시합니다. 원장 거래·감사 이력은 바뀌지 않습니다. 확정된 달은 재개한 뒤에만 바꿀 수 있고, 재확정하면 새 지문이 남습니다.</span>
             </p>
           )}
-          {pv.months.length === 0 && <p className="muted" style={{ margin: '8px 0 0', fontSize: 12 }}>아직 거래가 없는 세부반이라 지금 달라지는 검증 결과는 없습니다. 이후 업로드부터 통합 프로그램 기준으로 대조됩니다.</p>}
+          {pv.months.length === 0 && pv.changeCount > 0 && <p className="muted" style={{ margin: '8px 0 0', fontSize: 12 }}>지금 달라지는 검증 결과가 있는 달이 없습니다 (세부반에 거래가 없음). 이후 업로드부터 통합 프로그램 기준으로 대조됩니다.</p>}
           <div className="row" style={{ marginTop: 10 }}>
             <span className="label">메모</span>
             <input className="input" style={{ flex: 1 }} placeholder="선택 (예: 2학기 세부반 구성 확인)" value={note} onChange={(e) => setNote(e.target.value)} />

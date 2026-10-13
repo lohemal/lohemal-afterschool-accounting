@@ -1177,11 +1177,15 @@ export interface MonthChanges {
   status: string
   closedAt: string | null
   hasFingerprint: boolean
+  /** 확정 때 쓴 지문 형식 (1 = 원장·배분·정정, 2 = + 프로그램 연결·그룹, 0 = 없음) */
+  fingerprintVersion: number
   changed: boolean
   newEntryIds: number[]
   changedEntryIds: number[]
   adjustmentChanges: [number, string, string][]
   allocationChanged: boolean
+  linkChanged: boolean
+  groupChanged: boolean
   summary: string
 }
 
@@ -1359,6 +1363,9 @@ export interface LinkBoard {
 export interface LinkItem {
   programId: number
   parentId: number | null
+  /** 미리보기 때 본 현재 연결 — 적용 직전에 달라져 있으면 충돌로 막는다 */
+  expectedKnown?: boolean
+  expectedParentId?: number | null
 }
 
 export interface LinkPreviewItem {
@@ -1381,6 +1388,8 @@ export interface LinkMonthImpact {
   label: string
   closed: boolean
   programNames: string[]
+  /** 연결 전후 검증 결과가 달라지는 행 수 */
+  changedRows: number
 }
 
 export interface LinkPreview {

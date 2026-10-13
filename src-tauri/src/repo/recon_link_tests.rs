@@ -48,7 +48,7 @@ impl T {
         self.entry(program, self.fund_ben, item, "expenditure", if item == self.item_instructor { "instructor_pay" } else { "vendor_pay" }, amount, party)
     }
     fn link(&self, child: i64, parent: i64) {
-        self.db.write(|tx| program_link::apply(tx, self.year_id, &[LinkItem { program_id: child, parent_id: Some(parent) }], "시험", "suggested")).unwrap();
+        self.db.write(|tx| program_link::apply(tx, self.year_id, &[LinkItem { program_id: child, parent_id: Some(parent), expected_known: false, expected_parent_id: None }], "시험", "suggested")).unwrap();
     }
     fn recon(&self) -> MonthRecon {
         self.db.read(|c| month(c, self.sep)).unwrap()
@@ -96,7 +96,7 @@ fn d26_d30_pending_suggestion_is_not_judged_until_confirmed() {
     assert_eq!(r.todo_count, 6);
     assert_eq!(r.rows.len(), 6);
     // 확정(일괄) → 통합 행만 남고 세부반은 펼침 줄로
-    t.db.write(|tx| program_link::apply(tx, t.year_id, &[LinkItem { program_id: a, parent_id: Some(robot) }, LinkItem { program_id: b, parent_id: Some(robot) }], "", "suggested")).unwrap();
+    t.db.write(|tx| program_link::apply(tx, t.year_id, &[LinkItem { program_id: a, parent_id: Some(robot), expected_known: false, expected_parent_id: None }, LinkItem { program_id: b, parent_id: Some(robot), expected_known: false, expected_parent_id: None }], "", "suggested")).unwrap();
     let r = t.recon();
     assert_eq!(r.link_pending_count, 0);
     assert_eq!(r.rows.len(), 2, "{:?}", r.rows.iter().map(|x| (x.unit_name.clone(), x.item_set.clone())).collect::<Vec<_>>());

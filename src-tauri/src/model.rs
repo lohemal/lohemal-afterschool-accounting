@@ -1503,6 +1503,8 @@ pub struct MonthChanges {
     pub closed_at: Option<String>,
     /// 마지막 확정에 지문이 있는가 (없으면 옛 확정 — 시각 비교)
     pub has_fingerprint: bool,
+    /// 확정 때 쓴 지문 형식 (1 = 원장·배분·정정, 2 = + 프로그램 연결·그룹, 0 = 지문 없음)
+    pub fingerprint_version: i32,
     pub changed: bool,
     /// 확정 뒤 새로 들어온 거래
     pub new_entry_ids: Vec<i64>,
@@ -1511,6 +1513,10 @@ pub struct MonthChanges {
     /// 정정 상태가 바뀐 묶음 (id, 확정 때 상태, 지금 상태)
     pub adjustment_changes: Vec<(i64, String, String)>,
     pub allocation_changed: bool,
+    /// 세부반 → 통합 프로그램 연결이 확정 때와 다름 (지문 2 이상에서만)
+    pub link_changed: bool,
+    /// 프로그램 그룹 구성이 확정 때와 다름 (지문 2 이상에서만)
+    pub group_changed: bool,
     pub summary: String,
 }
 
@@ -1714,6 +1720,11 @@ pub struct LinkItem {
     pub program_id: i64,
     /// None = 연결 해제
     pub parent_id: Option<i64>,
+    /// 미리보기 때 본 현재 연결 (충돌 감지). expected_known 이 참일 때만 검사한다.
+    #[serde(default)]
+    pub expected_known: bool,
+    #[serde(default)]
+    pub expected_parent_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1741,6 +1752,8 @@ pub struct LinkMonthImpact {
     pub label: String,
     pub closed: bool,
     pub program_names: Vec<String>,
+    /// 연결 전후 검증 결과(프로그램×항목 행)가 달라지는 행 수
+    pub changed_rows: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]

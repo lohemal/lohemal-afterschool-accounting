@@ -169,9 +169,19 @@ pub fn month_label_of(conn: &Connection, fiscal_month_id: i64) -> AppResult<Stri
     Ok(ym.map(|y| format!("{} ({y})", months::label(&y))).unwrap_or_default())
 }
 
-/// 확정 대상 자료의 정규화 지문 — 살아 있는/취소된 원장 거래 전부(id·상태·단계·금액·분류·처리일), 배분, 정정 상태를
-/// id 순으로 고정 형식으로 이어 붙여 SHA-256. 시각은 넣지 않는다(같은 초 변경도 잡힌다).
+/// 지문 형식 버전. 1 = 원장·배분·정정(P6), 2 = 1 + 세부반 → 통합 프로그램 연결 · 그룹 구성(P7-1.2).
+/// 옛 확정은 스냅샷에 버전이 없어 1 로 해석하고 1 형식으로 다시 계산해 비교한다 — 지문을 다시 쓰지 않는다.
+pub const FINGERPRINT_VERSION: i32 = 2;
+
+/// 확정 대상 자료의 정규화 지문 (현재 버전).
 pub fn month_fingerprint(conn: &Connection, fiscal_month_id: i64) -> AppResult<(String, serde_json::Value)> {
+    month_fingerprint_v(conn, fiscal_month_id, FINGERPRINT_VERSION)
+}
+
+/// 살아 있는/취소된 원장 거래 전부(id·상태·단계·금액·분류·처리일), 배분, 정정 상태를 id 순으로 고정 형식으로 이어 붙여 SHA-256.
+/// 버전 2 는 그 뒤에 이 달에 거래·배분이 있는 프로그램의 통합 프로그램 연결(`l|프로그램|통합`)과 관련 그룹 구성(`g|그룹|구성원…`)을 더한다
+/// (다른 달·다른 학년도의 연결 변경은 이 달 지문에 영향을 주지 않는다). 시각은 넣지 않는다(같은 초 변경도 잡힌다).
+pub fn month_fingerprint_v(conn: &Connection, fiscal_month_id: i64, version: i32) -> AppResult<(String, serde_json::Value)> {
     use sha2::Digest;
     let mut h = sha2::Sha256::new();
     let mut entries: Vec<(i64, String, String)> = Vec::new();
@@ -212,7 +222,55 @@ pub fn month_fingerprint(conn: &Connection, fiscal_month_id: i64) -> AppResult<(
             adjs.push((id, s));
         }
     }
-    let snapshot = serde_json::json!({ "entries": entries, "allocations": allocs, "adjustments": adjs });
+    if version < 2 {
+        let snapshot = serde_json::json!({ "entries": entries, "allocations": allocs, "adjustments": adjs });
+        return Ok((hex::encode(h.finalize()), snapshot));
+    }
+    // 버전 2: 이 달에 거래(모든 상태)·배분이 있는 프로그램의 연결과, 이 달에 얽힌 그룹의 구성
+    let mut programs: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
+    let mut groups: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
+    {
+        let mut st = conn.prepare("SELECT program_id, program_group_id FROM ledger_entry WHERE fiscal_month_id = ?1")?;
+        for row in st.query_map([fiscal_month_id], |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<i64>>(1)?)))? {
+            let (p, g) = row?;
+            if let Some(p) = p {
+                programs.insert(p);
+            }
+            if let Some(g) = g {
+                groups.insert(g);
+            }
+        }
+        let mut st = conn.prepare("SELECT a.program_id FROM allocation a JOIN ledger_entry e ON e.id = a.entry_id WHERE e.fiscal_month_id = ?1")?;
+        for row in st.query_map([fiscal_month_id], |r| r.get::<_, i64>(0))? {
+            programs.insert(row?);
+        }
+        let mut st = conn.prepare("SELECT group_id FROM program_group_member WHERE program_id = ?1")?;
+        for p in programs.clone() {
+            for row in st.query_map([p], |r| r.get::<_, i64>(0))? {
+                groups.insert(row?);
+            }
+        }
+    }
+    let mut links: Vec<(i64, i64)> = Vec::new();
+    {
+        let mut st = conn.prepare("SELECT parent_id FROM program_link WHERE program_id = ?1")?;
+        for p in &programs {
+            let parent: Option<i64> = st.query_row([p], |r| r.get(0)).optional()?;
+            let parent = parent.unwrap_or(0);
+            h.update(format!("l|{p}|{parent}\n").as_bytes());
+            links.push((*p, parent));
+        }
+    }
+    let mut group_rows: Vec<(i64, Vec<i64>)> = Vec::new();
+    {
+        let mut st = conn.prepare("SELECT program_id FROM program_group_member WHERE group_id = ?1 ORDER BY program_id")?;
+        for g in &groups {
+            let members: Vec<i64> = st.query_map([g], |r| r.get::<_, i64>(0))?.collect::<Result<_, _>>()?;
+            h.update(format!("g|{g}|{}\n", members.iter().map(|m| m.to_string()).collect::<Vec<_>>().join(",")).as_bytes());
+            group_rows.push((*g, members));
+        }
+    }
+    let snapshot = serde_json::json!({ "v": 2, "entries": entries, "allocations": allocs, "adjustments": adjs, "links": links, "groups": group_rows });
     Ok((hex::encode(h.finalize()), snapshot))
 }
 
@@ -222,7 +280,7 @@ pub fn month_changes(conn: &Connection, fiscal_month_id: i64) -> AppResult<Month
     let last: Option<(String, String, String)> = conn
         .query_row("SELECT created_at, fingerprint, snapshot_json FROM month_close WHERE fiscal_month_id = ?1 AND action = 'close' ORDER BY id DESC LIMIT 1", [fiscal_month_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
         .optional()?;
-    let mut out = MonthChanges { fiscal_month_id, status: status.clone(), closed_at: None, has_fingerprint: false, changed: false, new_entry_ids: vec![], changed_entry_ids: vec![], adjustment_changes: vec![], allocation_changed: false, summary: String::new() };
+    let mut out = MonthChanges { fiscal_month_id, status: status.clone(), closed_at: None, has_fingerprint: false, fingerprint_version: 0, changed: false, new_entry_ids: vec![], changed_entry_ids: vec![], adjustment_changes: vec![], allocation_changed: false, link_changed: false, group_changed: false, summary: String::new() };
     let Some((closed_at, fp, snap)) = last else {
         out.summary = "확정 이력이 없습니다.".into();
         return Ok(out);
@@ -236,13 +294,16 @@ pub fn month_changes(conn: &Connection, fiscal_month_id: i64) -> AppResult<Month
         return Ok(out);
     }
     out.has_fingerprint = true;
-    let (now_fp, now_snap) = month_fingerprint(conn, fiscal_month_id)?;
+    let old: serde_json::Value = serde_json::from_str(&snap).unwrap_or(serde_json::json!({}));
+    // 확정 때 쓴 형식 그대로 다시 계산해 비교한다 (옛 확정에 연결 정보를 억지로 넣어 '변경'으로 오판하지 않는다).
+    let version = old["v"].as_i64().unwrap_or(1) as i32;
+    out.fingerprint_version = version;
+    let (now_fp, now_snap) = month_fingerprint_v(conn, fiscal_month_id, version)?;
     if now_fp == fp {
-        out.summary = "확정 당시와 같습니다.".into();
+        out.summary = if version < FINGERPRINT_VERSION { "확정 당시와 같습니다 (구형 지문 — 프로그램 연결은 검사 범위 밖).".into() } else { "확정 당시와 같습니다.".into() };
         return Ok(out);
     }
     out.changed = true;
-    let old: serde_json::Value = serde_json::from_str(&snap).unwrap_or(serde_json::json!({}));
     let old_entries: std::collections::BTreeMap<i64, (String, String)> = old["entries"].as_array().map(|a| a.iter().filter_map(|x| Some((x[0].as_i64()?, (x[1].as_str()?.to_string(), x[2].as_str()?.to_string())))).collect()).unwrap_or_default();
     for x in now_snap["entries"].as_array().into_iter().flatten() {
         let (id, st, sg) = (x[0].as_i64().unwrap_or(0), x[1].as_str().unwrap_or(""), x[2].as_str().unwrap_or(""));
@@ -262,6 +323,10 @@ pub fn month_changes(conn: &Connection, fiscal_month_id: i64) -> AppResult<Month
         }
     }
     out.allocation_changed = old["allocations"] != now_snap["allocations"];
+    if version >= 2 {
+        out.link_changed = old["links"] != now_snap["links"];
+        out.group_changed = old["groups"] != now_snap["groups"];
+    }
     let mut parts = Vec::new();
     if !out.new_entry_ids.is_empty() {
         parts.push(format!("새 거래 {}건", out.new_entry_ids.len()));
@@ -274,6 +339,12 @@ pub fn month_changes(conn: &Connection, fiscal_month_id: i64) -> AppResult<Month
     }
     if out.allocation_changed {
         parts.push("배분 변경".into());
+    }
+    if out.link_changed {
+        parts.push("세부반 → 통합 프로그램 연결 변경".into());
+    }
+    if out.group_changed {
+        parts.push("프로그램 그룹 구성 변경".into());
     }
     if parts.is_empty() {
         parts.push("거래 내용(금액·분류·처리일) 변경".into());

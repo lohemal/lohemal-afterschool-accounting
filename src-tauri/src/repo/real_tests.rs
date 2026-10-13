@@ -325,7 +325,7 @@ fn real_september_links() {
     assert!(r1.rows.iter().filter(|r| r.status == "link_pending").all(|r| r.basis >= 0 || r.expense >= 0), "원본 금액 표시");
 
     // (3) 추천 확정 (시험 전용 — 실제 운영에서는 사용자가 화면에서 확정한다)
-    let items: Vec<crate::model::LinkItem> = b1.rows.iter().filter(|r| r.status == "suggested").map(|r| crate::model::LinkItem { program_id: r.program_id, parent_id: Some(r.suggestion.as_ref().unwrap().parent_id) }).collect();
+    let items: Vec<crate::model::LinkItem> = b1.rows.iter().filter(|r| r.status == "suggested").map(|r| crate::model::LinkItem { program_id: r.program_id, parent_id: Some(r.suggestion.as_ref().unwrap().parent_id), expected_known: false, expected_parent_id: None }).collect();
     let pv = t.db.read(|c| program_link::preview(c, t.year_id, &items)).unwrap();
     assert!(!pv.blocked, "{:?}", pv.block_reasons);
     println!("\n## 4. 추천 {}건 일괄 확정 미리보기: 영향 달 {} · 경고 {}건", items.len(), pv.months.iter().map(|m| m.label.clone()).collect::<Vec<_>>().join(","), pv.items.iter().map(|i| i.warnings.len()).sum::<usize>());
@@ -364,4 +364,41 @@ fn real_september_links() {
     assert_eq!(rep.error_count, 0, "{:?}", rep.items.iter().filter(|i| i.level == "error").map(|i| &i.detail).collect::<Vec<_>>());
     let h = t.db.read(|c| program_link::history(c, t.year_id)).unwrap();
     assert_eq!(h.len(), items.len());
+
+    // ── P7-1.2: 월 확정 → 매핑 변경 차단 → 재개 → 변경 → 재확정 (메모리 DB) ─────
+    println!("
+## 7. P7-1.2 — 9월 확정과 매핑 변경 보호");
+    t.db.write(|tx| year::month_close(tx, t.sep, "실제 자료 시험 확정")).unwrap();
+    let fp1: String = t.db.read(|c| c.query_row("SELECT fingerprint FROM month_close WHERE fiscal_month_id = ?1 AND action = 'close' ORDER BY id DESC LIMIT 1", [t.sep], |r| r.get(0)).map_err(Into::into)).unwrap();
+    let ch = t.db.read(|c| year::month_changes(c, t.sep)).unwrap();
+    println!("확정 지문(형식 {}): {}… · 확정 뒤 변경: {}", ch.fingerprint_version, &fp1[..12], ch.changed);
+    assert!(ch.fingerprint_version == 2 && !ch.changed);
+    // 확정 상태에서 로봇과학B 해제 시도 → 차단
+    let robot_b = r2.rows.iter().find(|r| r.unit_name == "로봇과학").and_then(|r| r.children.iter().find(|c| c.program_name == "로봇과학B")).map(|c| c.program_id).expect("로봇과학B");
+    let unlink = vec![crate::model::LinkItem { program_id: robot_b, parent_id: None, expected_known: false, expected_parent_id: None }];
+    let pv = t.db.read(|c| program_link::preview(c, t.year_id, &unlink)).unwrap();
+    println!("확정 중 해제 미리보기: 차단 {} · 영향 달 {:?}", pv.blocked, pv.months.iter().map(|m| format!("{}{} {}행", m.label, if m.closed { "(확정)" } else { "" }, m.changed_rows)).collect::<Vec<_>>());
+    assert!(pv.blocked && pv.block_reasons[0].contains("2026년 9월 회계가 확정되어 있어"));
+    assert!(t.db.write(|tx| program_link::apply(tx, t.year_id, &unlink, "", "manual")).is_err());
+    let total_before = (r2.collection_total, r2.expenditure_total);
+    // 재개 → 변경 → 전후 차이 → 재확정
+    t.db.write(|tx| year::month_reopen(tx, t.sep, "매핑 수정")).unwrap();
+    t.db.write(|tx| program_link::apply(tx, t.year_id, &unlink, "실제 자료 시험", "manual")).unwrap();
+    let ch = t.db.read(|c| year::month_changes(c, t.sep)).unwrap();
+    println!("재개 뒤 변경 감지: {} — {}", ch.changed, ch.summary);
+    assert!(ch.changed && ch.link_changed);
+    let r3 = t.db.read(|c| recon::month(c, t.sep)).unwrap();
+    let robot_after = r3.rows.iter().find(|r| r.unit_name == "로봇과학" && r.item_set == "textbook_material").unwrap();
+    println!("변경 뒤 로봇과학 교재·재료비: 징수 {} → {} · 상태 {} (로봇과학B 분리)", w(r2.rows.iter().find(|r| r.unit_name == "로봇과학" && r.item_set == "textbook_material").unwrap().basis), w(robot_after.basis), robot_after.status_label);
+    assert_eq!((r3.collection_total, r3.expenditure_total), total_before, "원장 총액 불변");
+    t.db.write(|tx| year::month_close(tx, t.sep, "재확정")).unwrap();
+    let fp2: String = t.db.read(|c| c.query_row("SELECT fingerprint FROM month_close WHERE fiscal_month_id = ?1 AND action = 'close' ORDER BY id DESC LIMIT 1", [t.sep], |r| r.get(0)).map_err(Into::into)).unwrap();
+    println!("재확정 지문: {}… (이전과 다름: {})", &fp2[..12], fp1 != fp2);
+    assert_ne!(fp1, fp2);
+    assert!(!t.db.read(|c| year::month_changes(c, t.sep)).unwrap().changed);
+    let relink = vec![crate::model::LinkItem { program_id: robot_b, parent_id: Some(robot_after.unit_id), expected_known: false, expected_parent_id: None }];
+    assert!(t.db.write(|tx| program_link::apply(tx, t.year_id, &relink, "", "manual")).is_err(), "재확정 뒤 추가 변경 차단");
+    let closes: i64 = t.db.read(|c| c.query_row("SELECT count(*) FROM month_close WHERE fiscal_month_id = ?1", [t.sep], |r| r.get(0)).map_err(Into::into)).unwrap();
+    println!("확정 이력 {}건 (확정·재개·재확정 모두 보존)", closes);
+    assert_eq!(closes, 3);
 }

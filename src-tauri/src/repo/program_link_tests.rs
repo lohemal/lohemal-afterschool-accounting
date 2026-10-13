@@ -49,7 +49,7 @@ impl T {
         self.entry(self.sep, program, self.item_instructor, "expenditure", "instructor_pay", amount)
     }
     fn link(&self, child: i64, parent: Option<i64>) -> AppResult<LinkApplyResult> {
-        self.db.write(|tx| apply(tx, self.year_id, &[LinkItem { program_id: child, parent_id: parent }], "시험", "manual"))
+        self.db.write(|tx| apply(tx, self.year_id, &[LinkItem { program_id: child, parent_id: parent, expected_known: false, expected_parent_id: None }], "시험", "manual"))
     }
     fn board(&self) -> LinkBoard {
         self.db.read(|c| board(c, self.year_id)).unwrap()
@@ -93,7 +93,7 @@ fn a4_one_class_belongs_to_one_umbrella_and_depth_is_one() {
     let a = t.program("로봇과학A");
     t.link(a, Some(robot)).unwrap();
     // 같은 세부반을 다른 통합에 '추가'로 잇는 것은 변경(change)이지 중복이 아니다 — 연결은 하나뿐
-    let pv = t.db.read(|c| preview(c, t.year_id, &[LinkItem { program_id: a, parent_id: Some(coding) }])).unwrap();
+    let pv = t.db.read(|c| preview(c, t.year_id, &[LinkItem { program_id: a, parent_id: Some(coding), expected_known: false, expected_parent_id: None }])).unwrap();
     assert_eq!(pv.items[0].action, "change");
     assert!(!pv.blocked);
     assert_eq!(t.db.read(|c| links(c, t.year_id)).unwrap().len(), 1);
@@ -107,11 +107,11 @@ fn a4_one_class_belongs_to_one_umbrella_and_depth_is_one() {
     assert!(err.message.contains("다른 통합 프로그램의 세부반"), "{}", err.message);
     // 자기 자신 · 한 묶음에 같은 세부반 두 번 · 다른 학년도
     assert!(t.link(b, Some(b)).is_err());
-    let pv = t.db.read(|c| preview(c, t.year_id, &[LinkItem { program_id: b, parent_id: Some(robot) }, LinkItem { program_id: b, parent_id: Some(coding) }])).unwrap();
+    let pv = t.db.read(|c| preview(c, t.year_id, &[LinkItem { program_id: b, parent_id: Some(robot), expected_known: false, expected_parent_id: None }, LinkItem { program_id: b, parent_id: Some(coding), expected_known: false, expected_parent_id: None }])).unwrap();
     assert!(pv.blocked && pv.block_reasons.iter().any(|r| r.contains("두 번")));
     let y2 = t.db.write(|tx| year::create(tx, 2027)).unwrap();
     let other = t.db.write(|tx| program::create(tx, y2.id, "로봇과학")).unwrap();
-    let pv = t.db.read(|c| preview(c, t.year_id, &[LinkItem { program_id: b, parent_id: Some(other) }])).unwrap();
+    let pv = t.db.read(|c| preview(c, t.year_id, &[LinkItem { program_id: b, parent_id: Some(other), expected_known: false, expected_parent_id: None }])).unwrap();
     assert!(pv.blocked && pv.block_reasons.iter().any(|r| r.contains("학년도")));
     // 그룹 구성원은 세부반이 될 수 없고, 세부반은 그룹에 들어갈 수 없다
     let uk = t.program("우쿨렐레");
@@ -172,7 +172,7 @@ fn b8_b10_suggests_classes_of_programs_that_have_payments() {
     assert_eq!(bd.pending_count, 3);
     assert_eq!(t.row(&bd, "로봇과학A").status, "suggested");
     // 확정하면 사라진다
-    t.db.write(|tx| apply(tx, t.year_id, &[LinkItem { program_id: a, parent_id: Some(robot) }, LinkItem { program_id: b, parent_id: Some(robot) }], "", "suggested")).unwrap();
+    t.db.write(|tx| apply(tx, t.year_id, &[LinkItem { program_id: a, parent_id: Some(robot), expected_known: false, expected_parent_id: None }, LinkItem { program_id: b, parent_id: Some(robot), expected_known: false, expected_parent_id: None }], "", "suggested")).unwrap();
     let s = t.db.read(|c| pending(c, t.year_id)).unwrap();
     assert_eq!(s.len(), 1);
     assert_eq!(s[0].program_id, ma);
@@ -257,9 +257,9 @@ fn e34_closed_month_blocks_link_change_until_reopened() {
     t.collect(a, 500_000);
     t.entry(t.oct, a, t.item_tm, "collection", "initial_collect", 100);
     t.db.write(|tx| year::month_close(tx, t.sep, "9월 확정")).unwrap();
-    let pv = t.db.read(|c| preview(c, t.year_id, &[LinkItem { program_id: a, parent_id: Some(robot) }])).unwrap();
+    let pv = t.db.read(|c| preview(c, t.year_id, &[LinkItem { program_id: a, parent_id: Some(robot), expected_known: false, expected_parent_id: None }])).unwrap();
     assert!(pv.blocked, "{:?}", pv.block_reasons);
-    assert!(pv.block_reasons.iter().any(|r| r.contains("확정된 달")));
+    assert!(pv.block_reasons.iter().any(|r| r.contains("회계가 확정되어 있어") && r.contains("재개한 후")), "{:?}", pv.block_reasons);
     assert_eq!(pv.months.len(), 2);
     assert!(pv.months.iter().any(|m| m.closed && m.label.contains("9월")));
     let err = t.link(a, Some(robot)).unwrap_err();
@@ -277,7 +277,7 @@ fn e34_closed_month_blocks_link_change_until_reopened() {
     assert!(t.link(a, None).is_err());
     // 거래가 없는 새 세부반은 확정된 달이 있어도 연결된다 (영향 받는 달이 없다)
     let b = t.program("로봇과학B");
-    let pv = t.db.read(|c| preview(c, t.year_id, &[LinkItem { program_id: b, parent_id: Some(robot) }])).unwrap();
+    let pv = t.db.read(|c| preview(c, t.year_id, &[LinkItem { program_id: b, parent_id: Some(robot), expected_known: false, expected_parent_id: None }])).unwrap();
     assert!(!pv.blocked && pv.months.is_empty());
 }
 
@@ -290,7 +290,7 @@ fn preview_warns_about_direct_payments_and_reports_impact() {
     t.collect(a, 500_000);
     t.pay(a, 50_000);
     t.collect(robot, 30_000);
-    let pv = t.db.read(|c| preview(c, t.year_id, &[LinkItem { program_id: a, parent_id: Some(robot) }])).unwrap();
+    let pv = t.db.read(|c| preview(c, t.year_id, &[LinkItem { program_id: a, parent_id: Some(robot), expected_known: false, expected_parent_id: None }])).unwrap();
     assert!(!pv.blocked);
     assert_eq!(pv.change_count, 1);
     let it = &pv.items[0];
@@ -303,7 +303,7 @@ fn preview_warns_about_direct_payments_and_reports_impact() {
     let eng = t.program("영어");
     let ea = t.program("영어A");
     t.collect(ea, 10);
-    let pv = t.db.read(|c| preview(c, t.year_id, &[LinkItem { program_id: ea, parent_id: Some(eng) }])).unwrap();
+    let pv = t.db.read(|c| preview(c, t.year_id, &[LinkItem { program_id: ea, parent_id: Some(eng), expected_known: false, expected_parent_id: None }])).unwrap();
     assert!(!pv.blocked && pv.items[0].warnings.iter().any(|w| w.contains("아직 지급 자료가 없습니다")));
 }
 
@@ -362,7 +362,10 @@ fn v9_db_with_data() -> (rusqlite::Connection, i64, i64, i64) {
     let mk = |p: i64, flow: &str, kind: &str, amount: i64| NewEntry { school_year_id: y.id, fiscal_month_id: sep, program_id: Some(p), program_group_id: None, student_id: None, fund_type_id: Some(fund), amount_item_id: item, flow: flow.into(), entry_kind: kind.into(), amount, stage: None, processed_on: None, counterparty: Some("가명".into()), upload_file_id: None, source_row_id: None, reason: None };
     ledger::insert(&c, &mk(a, "collection", "initial_collect", 500_000)).unwrap();
     ledger::insert(&c, &mk(robot, "expenditure", "instructor_pay", 500_000)).unwrap();
-    year::month_close(&c, sep, "v9 확정").unwrap();
+    // v9 시절의 확정을 흉내 낸다: 지문 형식 1 (연결 정보 없음) 로 직접 기록
+    let (fp, snap) = year::month_fingerprint_v(&c, sep, 1).unwrap();
+    c.execute("UPDATE fiscal_month SET status = 'closed' WHERE id = ?1", [sep]).unwrap();
+    c.execute("INSERT INTO month_close (fiscal_month_id, action, totals_json, note, fingerprint, snapshot_json) VALUES (?1, 'close', '{}', 'v9 확정', ?2, ?3)", rusqlite::params![sep, fp, snap.to_string()]).unwrap();
     (c, y.id, robot, a)
 }
 
@@ -389,14 +392,19 @@ fn f37_v9_to_v10_keeps_data_and_adds_link_tables() {
     assert_eq!(migrate::current_version(&c).unwrap(), 10);
     assert_eq!(snapshot(&c), before, "원장·감사·확정 이력·프로그램 보존");
     assert_eq!(links(&c, yid).unwrap().len(), 0);
+    // D24. 구형(형식 1) 확정 기록은 그 형식으로 검증되어 '변경'으로 오판되지 않는다
+    let sep: i64 = c.query_row("SELECT fiscal_month_id FROM ledger_entry LIMIT 1", [], |r| r.get(0)).unwrap();
+    let ch = year::month_changes(&c, sep).unwrap();
+    assert!(ch.has_fingerprint && ch.fingerprint_version == 1 && !ch.changed, "{}", ch.summary);
+    assert!(ch.summary.contains("구형 지문"));
     let ic: String = c.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap();
     assert_eq!(ic, "ok");
     // 옛 자료 위에서 추천·확정이 된다 (확정된 달이라 재개 먼저)
     assert!(pending(&c, yid).unwrap().iter().any(|s| s.program_id == a && s.parent_id == robot));
     let sep: i64 = c.query_row("SELECT fiscal_month_id FROM ledger_entry LIMIT 1", [], |r| r.get(0)).unwrap();
-    assert!(apply(&c, yid, &[LinkItem { program_id: a, parent_id: Some(robot) }], "", "suggested").is_err(), "v9 때 확정한 달은 여전히 보호된다");
+    assert!(apply(&c, yid, &[LinkItem { program_id: a, parent_id: Some(robot), expected_known: false, expected_parent_id: None }], "", "suggested").is_err(), "v9 때 확정한 달은 여전히 보호된다");
     year::month_reopen(&c, sep, "매핑").unwrap();
-    apply(&c, yid, &[LinkItem { program_id: a, parent_id: Some(robot) }], "", "suggested").unwrap();
+    apply(&c, yid, &[LinkItem { program_id: a, parent_id: Some(robot), expected_known: false, expected_parent_id: None }], "", "suggested").unwrap();
     let r = recon::month(&c, sep).unwrap();
     let row = r.rows.iter().find(|x| x.unit_name == "로봇과학" && x.item_set == "instructor").unwrap();
     assert_eq!((row.status.as_str(), row.basis, row.expense), ("ok", 500_000, 500_000));

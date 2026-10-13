@@ -75,6 +75,11 @@ struct Info {
 }
 
 fn load(conn: &Connection, school_year_id: i64) -> AppResult<Vec<Info>> {
+    load_with(conn, school_year_id, None)
+}
+
+/// `links_override` 가 있으면 저장된 연결 대신 그것을 적용한 상태로 읽는다 (미리보기용).
+fn load_with(conn: &Connection, school_year_id: i64, links_override: Option<&HashMap<i64, i64>>) -> AppResult<Vec<Info>> {
     let mut st = conn.prepare("SELECT id, name FROM program WHERE school_year_id = ?1 ORDER BY name")?;
     let mut infos: Vec<Info> = st
         .query_map([school_year_id], |r| {
@@ -97,7 +102,10 @@ fn load(conn: &Connection, school_year_id: i64) -> AppResult<Vec<Info>> {
     let idx: HashMap<i64, usize> = infos.iter().enumerate().map(|(i, p)| (p.id, i)).collect();
     {
         let mut st = conn.prepare("SELECT program_id, parent_id, updated_at, rule FROM program_link WHERE school_year_id = ?1")?;
-        let rows: Vec<(i64, i64, String, String)> = st.query_map([school_year_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<Result<_, _>>()?;
+        let mut rows: Vec<(i64, i64, String, String)> = st.query_map([school_year_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<Result<_, _>>()?;
+        if let Some(o) = links_override {
+            rows = o.iter().map(|(c, p)| (*c, *p, String::new(), String::from("preview"))).collect();
+        }
         for (c, p, at, rule) in rows {
             if let Some(&i) = idx.get(&c) {
                 infos[i].parent = Some(p);
@@ -199,7 +207,11 @@ fn suggest_for(conn: &Connection, school_year_id: i64, p: &Info, by_id: &HashMap
 
 /// 모든 프로그램의 추천·후보 (확정된 것·그룹 구성원·통합 프로그램 자신은 제외).
 pub fn suggestions(conn: &Connection, school_year_id: i64) -> AppResult<Vec<LinkSuggestion>> {
-    let infos = load(conn, school_year_id)?;
+    suggestions_with(conn, school_year_id, None)
+}
+
+pub fn suggestions_with(conn: &Connection, school_year_id: i64, links_override: Option<&HashMap<i64, i64>>) -> AppResult<Vec<LinkSuggestion>> {
+    let infos = load_with(conn, school_year_id, links_override)?;
     let by_id: HashMap<i64, &Info> = infos.iter().map(|p| (p.id, p)).collect();
     let mut out = Vec::new();
     for p in &infos {
@@ -212,7 +224,43 @@ pub fn suggestions(conn: &Connection, school_year_id: i64) -> AppResult<Vec<Link
 
 /// 아직 확정되지 않은 추천 (recommended 만) — 대조 화면의 '매핑 확인 필요' 판정에 쓴다.
 pub fn pending(conn: &Connection, school_year_id: i64) -> AppResult<Vec<LinkSuggestion>> {
-    Ok(suggestions(conn, school_year_id)?.into_iter().filter(|s| s.recommended).collect())
+    pending_with(conn, school_year_id, None)
+}
+
+pub fn pending_with(conn: &Connection, school_year_id: i64, links_override: Option<&HashMap<i64, i64>>) -> AppResult<Vec<LinkSuggestion>> {
+    Ok(suggestions_with(conn, school_year_id, links_override)?.into_iter().filter(|s| s.recommended).collect())
+}
+
+fn ym_label(ym: &str) -> String {
+    let mut it = ym.split('-');
+    match (it.next(), it.next()) {
+        (Some(y), Some(m)) => format!("{y}년 {}월", m.trim_start_matches('0')),
+        _ => ym.to_string(),
+    }
+}
+
+/// 영향 월 산출 — 연결 변경 전후로 **실제 검증 결과(프로그램×항목 행)가 달라지는 달**. 이름이 아니라 프로그램 id·연결 관계로,
+/// 세부반·기존/새 통합 프로그램·그룹·배분·재원경정·환불·추천 판정까지 대조 엔진이 그대로 계산한 결과를 비교하므로 어떤 경로의 간접 영향도 빠지지 않는다.
+/// (달라지는 행 수, 영향 달) — 학년도의 거래가 있는 달만 본다 (다른 학년도는 무관).
+fn affected_months(conn: &Connection, school_year_id: i64, after: &HashMap<i64, i64>) -> AppResult<Vec<(i64, String, bool, i64)>> {
+    let mut st = conn.prepare("SELECT m.id, m.ym, m.status FROM fiscal_month m WHERE m.school_year_id = ?1 AND EXISTS (SELECT 1 FROM ledger_entry e WHERE e.fiscal_month_id = m.id) ORDER BY m.seq")?;
+    let months: Vec<(i64, String, String)> = st.query_map([school_year_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<Result<_, _>>()?;
+    let mut out = Vec::new();
+    for (id, ym, status) in months {
+        let before = crate::repo::recon::row_digests(conn, id, None)?;
+        let now = crate::repo::recon::row_digests(conn, id, Some(after))?;
+        let mut changed = 0i64;
+        for (k, v) in &now {
+            if before.get(k) != Some(v) {
+                changed += 1;
+            }
+        }
+        changed += before.keys().filter(|k| !now.contains_key(*k)).count() as i64;
+        if changed > 0 {
+            out.push((id, ym_label(&ym), status == "closed", changed));
+        }
+    }
+    Ok(out)
 }
 
 // ── 화면 ─────────────────────────────────────────────────────────────────
@@ -305,6 +353,12 @@ pub fn preview(conn: &Connection, school_year_id: i64, items: &[LinkItem]) -> Ap
         if !seen.insert(p.id) {
             errors.push("같은 세부반이 한 번에 두 번 들어 있습니다.".into());
         }
+        if it.expected_known && it.expected_parent_id != p.parent {
+            errors.push(format!(
+                "미리보기 이후 연결이 바뀌었습니다 (지금: {}). 화면을 새로 고친 뒤 다시 확인해 주세요.",
+                p.parent.and_then(|q| by_id.get(&q)).map(|x| x.name.as_str()).unwrap_or("연결 없음")
+            ));
+        }
         let to = it.parent_id;
         let to_info = to.and_then(|q| by_id.get(&q).copied());
         let action = match (p.parent, to) {
@@ -367,13 +421,36 @@ pub fn preview(conn: &Connection, school_year_id: i64, items: &[LinkItem]) -> Ap
     }
     let mut months = Vec::new();
     let mut block_reasons: Vec<String> = out.iter().flat_map(|i| i.errors.iter().map(|e| format!("{}: {e}", i.program_name))).collect();
-    for (m, names) in month_map {
-        let closed = year::month_is_closed(conn, m)?;
-        let label = year::month_label_of(conn, m)?;
-        if closed {
-            block_reasons.push(format!("{label} 은 확정된 달입니다 ({}). 월별 정산에서 재개한 뒤 연결을 바꿔 주세요.", names.join("·")));
+    // 연결 변경을 적용한 상태를 만들어 달마다 실제 검증 결과를 다시 계산해 비교한다 (세부반 거래가 있는 달만 보는 것이 아니다).
+    let mut after: HashMap<i64, i64> = infos.iter().filter_map(|p| p.parent.map(|q| (p.id, q))).collect();
+    for i in out.iter().filter(|i| i.action != "noop" && i.errors.is_empty()) {
+        match i.to_parent_id {
+            Some(q) => {
+                after.insert(i.program_id, q);
+            }
+            None => {
+                after.remove(&i.program_id);
+            }
         }
-        months.push(LinkMonthImpact { fiscal_month_id: m, label, closed, program_names: names });
+    }
+    if block_reasons.is_empty() && out.iter().any(|i| i.action != "noop") {
+        for (m, label, closed, changed) in affected_months(conn, school_year_id, &after)? {
+            let mut names = month_map.get(&m).cloned().unwrap_or_default();
+            if names.is_empty() {
+                names.push("(판정 상태 변경)".into());
+            }
+            if closed {
+                for i in out.iter().filter(|i| i.action != "noop" && i.errors.is_empty()) {
+                    block_reasons.push(format!(
+                        "'{}' ({} → {}): {label} 회계가 확정되어 있어 프로그램 연결을 변경할 수 없습니다. 해당 월을 재개한 후 매핑을 변경하고 다시 확정해 주세요. (달라지는 검증 행 {changed}개)",
+                        i.program_name,
+                        i.from_parent_name.as_deref().unwrap_or("연결 없음"),
+                        i.to_parent_name.as_deref().unwrap_or("연결 해제")
+                    ));
+                }
+            }
+            months.push(LinkMonthImpact { fiscal_month_id: m, label, closed, program_names: names, changed_rows: changed });
+        }
     }
     if !months.is_empty() {
         warnings_all.push(format!("{}개 달의 프로그램별 검증 결과가 다시 계산됩니다 (원장 거래는 바뀌지 않습니다).", months.len()));
@@ -382,7 +459,8 @@ pub fn preview(conn: &Connection, school_year_id: i64, items: &[LinkItem]) -> Ap
     Ok(LinkPreview { blocked: !block_reasons.is_empty(), block_reasons, warnings: warnings_all, change_count, items: out, months })
 }
 
-/// 적용 — 미리보기를 다시 돌려 하나라도 막히면 아무것도 바꾸지 않는다. rule: suggested(추천 확정) · manual(직접 선택).
+/// 적용 — 미리보기와 **같은 함수**로 다시 검증해 하나라도 막히면 아무것도 바꾸지 않는다(호출자가 트랜잭션 안에서 돌리므로 부분 적용 없음,
+/// 차단된 변경은 감사 이력에 남지 않는다). rule: suggested(추천 확정) · manual(직접 선택).
 pub fn apply(conn: &Connection, school_year_id: i64, items: &[LinkItem], note: &str, rule: &str) -> AppResult<LinkApplyResult> {
     let pv = preview(conn, school_year_id, items)?;
     if pv.blocked {
@@ -440,7 +518,7 @@ pub fn umbrella_create(conn: &Connection, school_year_id: i64, name: &str, membe
         Some(program::Target::Group(_)) => return Err(AppError::invalid("같은 이름의 프로그램 그룹이 있습니다.")),
         None => program::create(conn, school_year_id, n)?,
     };
-    let items: Vec<LinkItem> = member_ids.iter().map(|m| LinkItem { program_id: *m, parent_id: Some(id) }).collect();
+    let items: Vec<LinkItem> = member_ids.iter().map(|m| LinkItem { program_id: *m, parent_id: Some(id), expected_known: false, expected_parent_id: None }).collect();
     if !items.is_empty() {
         apply(conn, school_year_id, &items, note, "manual")?;
     }
@@ -476,3 +554,7 @@ pub fn history(conn: &Connection, school_year_id: i64) -> AppResult<Vec<LinkLog>
 #[cfg(test)]
 #[path = "program_link_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "program_link_close_tests.rs"]
+mod close_tests;

@@ -320,6 +320,11 @@ struct Computed {
 }
 
 fn compute(conn: &Connection, month: i64) -> AppResult<Computed> {
+    compute_with(conn, month, None)
+}
+
+/// `links_override` 가 있으면 저장된 연결 대신 그것으로 계산한다 — 매핑 변경 미리보기가 "바뀌면 어떻게 되는가" 를 실제로 계산하는 데 쓴다.
+fn compute_with(conn: &Connection, month: i64, links_override: Option<&HashMap<i64, i64>>) -> AppResult<Computed> {
     let idx = FundIndex::load(conn)?;
     let entries = load_entries(conn, month, &idx)?;
     let allocs = load_allocations(conn, month)?;
@@ -391,7 +396,10 @@ fn compute(conn: &Connection, month: i64) -> AppResult<Computed> {
     }
     // 세부반 → 통합 프로그램 합산 (P7-1.1). 세부반 칸은 통합 칸에 한 번씩 더하고 목록에서 뺀다.
     let year_id: i64 = conn.query_row("SELECT school_year_id FROM fiscal_month WHERE id = ?1", [month], |r| r.get(0))?;
-    let links = crate::repo::program_link::links(conn, year_id)?;
+    let links = match links_override {
+        Some(l) => l.clone(),
+        None => crate::repo::program_link::links(conn, year_id)?,
+    };
     let mut children: HashMap<i64, Vec<i64>> = HashMap::new();
     for (c, p) in &links {
         children.entry(*p).or_default().push(*c);
@@ -426,7 +434,12 @@ fn compute(conn: &Connection, month: i64) -> AppResult<Computed> {
     }
     let mut pending_child: HashMap<i64, String> = HashMap::new();
     let mut pending_parent: HashMap<i64, Vec<String>> = HashMap::new();
-    for s in crate::repo::program_link::pending(conn, year_id)? {
+    // 추천은 이 달에 거래가 있는 세부반 후보에 대해서만 판정에 쓴다 — 다른 달에만 있는 후보가 이 달의 통합 행을 바꾸지 않는다.
+    let in_month: std::collections::HashSet<i64> = cells.keys().filter_map(|(u, _)| if let Unit::Program(p) = u { Some(*p) } else { None }).collect();
+    for s in crate::repo::program_link::pending_with(conn, year_id, links_override)? {
+        if !in_month.contains(&s.program_id) {
+            continue;
+        }
         pending_child.insert(s.program_id, s.parent_name.clone());
         pending_parent.entry(s.parent_id).or_default().push(s.program_name.clone());
     }
@@ -764,6 +777,26 @@ fn build_row(conn: &Connection, month: i64, cp: &Computed, unit: Unit, set: &'st
         link_pending,
         link_hint,
     })
+}
+
+/// 검증 결과의 행 단위 다이제스트 — (단위·항목) → 판정·금액·재원별·세부반 구성을 고정 형식으로 해시. 매핑 변경 영향 월 산출에 쓴다.
+/// 확인 메모·표시명·시각은 넣지 않는다(검증 결과와 무관).
+pub fn row_digests(conn: &Connection, fiscal_month_id: i64, links_override: Option<&HashMap<i64, i64>>) -> AppResult<BTreeMap<String, String>> {
+    let cp = compute_with(conn, fiscal_month_id, links_override)?;
+    let mut out = BTreeMap::new();
+    for ((unit, set), c) in &cp.cells {
+        let r = build_row(conn, fiscal_month_id, &cp, *unit, set, c)?;
+        let funds: Vec<String> = r.funds.iter().map(|f| format!("{:?}:{:?}:{:?}:{}", f.fund_id, f.basis, f.expense, f.state)).collect();
+        // 세부반 줄은 실제로 합산된 세부반만 (직접 귀속 줄·is_parent 표시는 결과가 아니라 표시 방식이라 넣지 않는다)
+        let kids: Vec<String> = r.children.iter().filter(|k| !k.direct).map(|k| format!("{}:{}:{}:{}", k.program_id, k.basis, k.expense, k.entry_count)).collect();
+        let text = format!(
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            r.status, r.basis, r.expense, r.diff, r.comparable_basis, r.comparable_expense, r.excluded_basis, r.excluded_expense, r.unmapped_basis, r.unmapped_expense,
+            r.unallocated_in_set, r.total_match_fund_mismatch, funds.join(","), kids.join(",")
+        );
+        out.insert(format!("{}:{}:{}", r.unit_kind, r.unit_id, set), hash::sha256_hex(text.as_bytes())[..16].to_string());
+    }
+    Ok(out)
 }
 
 pub fn month(conn: &Connection, fiscal_month_id: i64) -> AppResult<MonthRecon> {
