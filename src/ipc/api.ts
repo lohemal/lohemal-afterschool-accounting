@@ -33,6 +33,12 @@ import type {
   ReconDetail,
   ReconNote,
   SourceRowView,
+  Adjustment,
+  AdjustmentFilter,
+  AdjustmentInput,
+  AdjustmentPreview,
+  EntryPick,
+  StudentRow,
 } from './types'
 
 export const api = {
@@ -81,6 +87,14 @@ export const api = {
   reconNoteSave: (fiscalMonthId: number, unitKind: string, unitId: number, itemSet: string, status: string, reason: string) => invoke<ReconNote>('recon_note_save', { fiscalMonthId, unitKind, unitId, itemSet, status, reason }),
   sourceRowView: (sourceRowId: number) => invoke<SourceRowView>('source_row_view', { sourceRowId }),
   openStoredFile: (fileId: number) => invoke<void>('open_stored_file', { fileId }),
+
+  adjustmentPreview: (input: AdjustmentInput) => invoke<AdjustmentPreview>('adjustment_preview', { input }),
+  adjustmentCreate: (input: AdjustmentInput) => invoke<Adjustment>('adjustment_create', { input }),
+  adjustmentList: (filter: AdjustmentFilter) => invoke<Adjustment[]>('adjustment_list', { filter }),
+  adjustmentSetStatus: (id: number, status: string, processedOn?: string | null, note?: string | null) => invoke<Adjustment>('adjustment_set_status', { id, status, processedOn, note }),
+  adjustmentCancel: (id: number, reason: string) => invoke<Adjustment>('adjustment_cancel', { id, reason }),
+  studentList: (schoolYearId: number) => invoke<StudentRow[]>('student_list', { schoolYearId }),
+  entryPicks: (fiscalMonthId: number, programId: number, studentId?: number | null) => invoke<EntryPick[]>('entry_picks', { fiscalMonthId, programId, studentId }),
 }
 
 export function isAppError(e: unknown): e is AppError {

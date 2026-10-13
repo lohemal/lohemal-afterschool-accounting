@@ -9,6 +9,7 @@ export const STATUS_CLS: Record<ReconStatus, string> = {
   unmapped: 'badge badge--soon',
   unverifiable: 'badge badge--muted',
   group_only: 'badge badge--navy',
+  orphan: 'badge badge--bad',
 }
 
 export function StatusBadge({ row }: { row: ReconRow }) {

@@ -431,7 +431,7 @@ export interface ManualPart {
   amount: number
 }
 
-export type ReconStatus = 'ok' | 'mismatch' | 'missing' | 'unallocated' | 'unmapped' | 'unverifiable' | 'group_only'
+export type ReconStatus = 'ok' | 'mismatch' | 'missing' | 'unallocated' | 'unmapped' | 'unverifiable' | 'group_only' | 'orphan'
 export type NoteStatus = 'none' | 'todo' | 'investigating' | 'explained'
 
 export interface FundLine {
@@ -460,6 +460,7 @@ export interface ReconRow {
   initial: number
   extra: number
   refund: number
+  transferCount: number
   allocatedIn: number
   basis: number
   expense: number
@@ -552,4 +553,120 @@ export interface SourceRowView {
   sheet: string
   rowNo: number
   cells: string[]
+}
+
+/* ── P3: 수동 회계 정정 ──────────────────────────────── */
+
+export type AdjustKind = 'fund_transfer' | 'refund' | 'refund_return' | 'extra_collect'
+export type AdjustStatus = 'planned' | 'done' | 'cancelled'
+
+export interface AdjustmentInput {
+  schoolYearId: number
+  fiscalMonthId: number
+  kind: AdjustKind
+  programId: number
+  studentId?: number | null
+  fromFundId?: number | null
+  toFundId?: number | null
+  fundTypeId?: number | null
+  amountItemId: number
+  amount: number
+  decidedOn?: string | null
+  processedOn?: string | null
+  status: 'planned' | 'done'
+  reason: string
+  relatedEntryId?: number | null
+  relatedAdjustmentId?: number | null
+  confirmDuplicate?: boolean
+}
+
+export interface FundBefore {
+  fundId: number
+  fundName: string
+  before: number
+  change: number
+  after: number
+}
+
+export interface AdjustmentPreview {
+  kindLabel: string
+  programName: string
+  student: string
+  monthLabel: string
+  monthClosed: boolean
+  funds: FundBefore[]
+  totalBefore: number
+  totalAfter: number
+  refundable: number | null
+  existingRefunds: number
+  duplicates: string[]
+  warnings: string[]
+  blocked: string[]
+}
+
+export interface AdjustmentLog {
+  fromStatus: string
+  toStatus: string
+  note: string
+  at: string
+}
+
+export interface Adjustment {
+  id: number
+  schoolYearId: number
+  fiscalMonthId: number
+  monthLabel: string
+  kind: AdjustKind
+  kindLabel: string
+  scope: 'student' | 'program'
+  programId: number
+  programName: string
+  studentId: number | null
+  student: string
+  fromFundName: string
+  toFundName: string
+  fundName: string
+  itemName: string
+  amount: number
+  decidedOn: string | null
+  processedOn: string | null
+  status: AdjustStatus
+  statusLabel: string
+  reason: string
+  relatedEntryId: number | null
+  relatedEntryState: string
+  relatedAdjustmentId: number | null
+  entryIds: number[]
+  orphan: boolean
+  createdAt: string
+  cancelledAt: string | null
+  cancelReason: string
+  logs: AdjustmentLog[]
+}
+
+export interface AdjustmentFilter {
+  schoolYearId: number
+  fiscalMonthId?: number | null
+  processedFrom?: string | null
+  processedTo?: string | null
+  programId?: number | null
+  studentText?: string | null
+  fundTypeId?: number | null
+  kind?: string | null
+  status?: string | null
+}
+
+export interface StudentRow {
+  id: number
+  label: string
+}
+
+export interface EntryPick {
+  id: number
+  kindLabel: string
+  fundName: string
+  itemName: string
+  amount: number
+  stage: string
+  fileName: string
 }

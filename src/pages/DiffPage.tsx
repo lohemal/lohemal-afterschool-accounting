@@ -15,6 +15,7 @@ const STATUS_OPTIONS: [ReconStatus | 'all' | 'attention', string][] = [
   ['all', '전체'],
   ['unallocated', '배분 미확정'],
   ['unmapped', '매핑 미확정'],
+  ['orphan', '원본 재확인 필요'],
   ['mismatch', '불일치'],
   ['missing', '자료 부족'],
   ['group_only', '그룹으로 검증'],
@@ -22,7 +23,7 @@ const STATUS_OPTIONS: [ReconStatus | 'all' | 'attention', string][] = [
   ['unverifiable', '검증 불가'],
 ]
 
-const RANK: Record<ReconStatus, number> = { unallocated: 0, unmapped: 1, mismatch: 2, missing: 3, group_only: 4, ok: 5, unverifiable: 6 }
+const RANK: Record<ReconStatus, number> = { unallocated: 0, unmapped: 1, orphan: 1, mismatch: 2, missing: 3, group_only: 4, ok: 5, unverifiable: 6 }
 
 export function DiffPage() {
   const { year } = useApp()
@@ -46,7 +47,7 @@ export function DiffPage() {
   const rows = useMemo(() => {
     const all = recon.data?.rows ?? []
     let f = all.filter((r) =>
-      status === 'all' ? true : status === 'attention' ? ['unallocated', 'unmapped', 'mismatch', 'missing'].includes(r.status) : r.status === status,
+      status === 'all' ? true : status === 'attention' ? ['unallocated', 'unmapped', 'orphan', 'mismatch', 'missing'].includes(r.status) : r.status === status,
     )
     if (item !== 'all') f = f.filter((r) => r.itemSet === item)
     if (noteFilter !== 'all') f = f.filter((r) => (noteFilter === 'recheck' ? r.needsRecheck : noteFilter === 'none' ? r.noteStatus === 'none' : r.noteStatus === noteFilter))

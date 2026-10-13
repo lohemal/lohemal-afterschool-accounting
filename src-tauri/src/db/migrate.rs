@@ -52,6 +52,13 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../migrations/004_fund_names.sql"),
         fk_off: false,
     },
+    // 수동 정정(재원경정·환불·추가징수) 표. 기존 표는 건드리지 않는다.
+    Migration {
+        version: 5,
+        name: "005_adjustment",
+        sql: include_str!("../../migrations/005_adjustment.sql"),
+        fk_off: false,
+    },
 ];
 
 pub fn latest_version() -> i32 {
@@ -272,7 +279,7 @@ mod tests {
         for t in [
             "school_year", "fiscal_month", "fund_type", "fund_type_alias", "amount_item", "program", "program_alias",
             "program_group", "program_group_member", "student", "upload_file", "upload_row", "upload_apply",
-            "source_row", "ledger_entry", "ledger_correction", "month_close", "audit_log", "app_setting", "allocation", "recon_note",
+            "source_row", "ledger_entry", "ledger_correction", "month_close", "audit_log", "app_setting", "allocation", "recon_note", "adjustment", "adjustment_entry", "adjustment_status_log",
         ] {
             assert!(names.iter().any(|n| n == t), "표 {t} 가 없다: {names:?}");
         }

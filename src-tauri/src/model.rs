@@ -601,6 +601,8 @@ pub struct ReconRow {
     pub initial: i64,
     pub extra: i64,
     pub refund: i64,
+    /// 재원별 기준액에 반영된 재원경정 거래 수 (쌍의 합은 0)
+    pub transfer_count: i64,
     pub allocated_in: i64,
     /// 전체 징수 기준액 = 비교 가능 + 비교 제외 + 매핑 미확정
     pub basis: i64,
@@ -713,4 +715,142 @@ pub struct SourceRowView {
     pub sheet: String,
     pub row_no: i64,
     pub cells: Vec<String>,
+}
+
+// ── P3: 수동 회계 정정 ────────────────────────────────────────────────────
+
+/// 정정 등록 입력. kind: fund_transfer · refund · refund_return · extra_collect
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdjustmentInput {
+    pub school_year_id: i64,
+    pub fiscal_month_id: i64,
+    pub kind: String,
+    pub program_id: i64,
+    pub student_id: Option<i64>,
+    pub from_fund_id: Option<i64>,
+    pub to_fund_id: Option<i64>,
+    pub fund_type_id: Option<i64>,
+    pub amount_item_id: i64,
+    pub amount: i64,
+    pub decided_on: Option<String>,
+    pub processed_on: Option<String>,
+    /// planned · done
+    pub status: String,
+    pub reason: String,
+    pub related_entry_id: Option<i64>,
+    pub related_adjustment_id: Option<i64>,
+    /// 중복 가능성 경고를 보고도 등록하겠다는 확인
+    #[serde(default)]
+    pub confirm_duplicate: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FundBefore {
+    pub fund_id: i64,
+    pub fund_name: String,
+    pub before: i64,
+    pub change: i64,
+    pub after: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdjustmentPreview {
+    pub kind_label: String,
+    pub program_name: String,
+    pub student: String,
+    pub month_label: String,
+    pub month_closed: bool,
+    /// 재원별 경정 전·변동·후 (경정이면 두 줄, 환불·추가징수면 한 줄)
+    pub funds: Vec<FundBefore>,
+    pub total_before: i64,
+    pub total_after: i64,
+    /// 환불 가능 금액 (수강료 환불일 때)
+    pub refundable: Option<i64>,
+    pub existing_refunds: i64,
+    /// 같은 경제적 사건일 수 있는 기존 거래·정정
+    pub duplicates: Vec<String>,
+    pub warnings: Vec<String>,
+    pub blocked: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Adjustment {
+    pub id: i64,
+    pub school_year_id: i64,
+    pub fiscal_month_id: i64,
+    pub month_label: String,
+    pub kind: String,
+    pub kind_label: String,
+    pub scope: String,
+    pub program_id: i64,
+    pub program_name: String,
+    pub student_id: Option<i64>,
+    pub student: String,
+    pub from_fund_name: String,
+    pub to_fund_name: String,
+    pub fund_name: String,
+    pub item_name: String,
+    pub amount: i64,
+    pub decided_on: Option<String>,
+    pub processed_on: Option<String>,
+    pub status: String,
+    pub status_label: String,
+    pub reason: String,
+    pub related_entry_id: Option<i64>,
+    pub related_entry_state: String,
+    pub related_adjustment_id: Option<i64>,
+    pub entry_ids: Vec<i64>,
+    /// 원본 거래가 취소되어 근거를 다시 확인해야 함
+    pub orphan: bool,
+    pub created_at: String,
+    pub cancelled_at: Option<String>,
+    pub cancel_reason: String,
+    pub logs: Vec<AdjustmentLog>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdjustmentLog {
+    pub from_status: String,
+    pub to_status: String,
+    pub note: String,
+    pub at: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AdjustmentFilter {
+    pub school_year_id: i64,
+    pub fiscal_month_id: Option<i64>,
+    pub processed_from: Option<String>,
+    pub processed_to: Option<String>,
+    pub program_id: Option<i64>,
+    pub student_text: Option<String>,
+    pub fund_type_id: Option<i64>,
+    pub kind: Option<String>,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudentRow {
+    pub id: i64,
+    pub label: String,
+}
+
+/// 학생·프로그램·귀속월의 유효 징수 거래 (환불·추가징수 등록 때 원본 거래 선택용)
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntryPick {
+    pub id: i64,
+    pub kind_label: String,
+    pub fund_name: String,
+    pub item_name: String,
+    pub amount: i64,
+    pub stage: String,
+    pub file_name: String,
 }

@@ -97,6 +97,13 @@ pub fn run() {
             commands::recon::recon_note_save,
             commands::recon::source_row_view,
             commands::recon::open_stored_file,
+            commands::adjust::adjustment_preview,
+            commands::adjust::adjustment_create,
+            commands::adjust::adjustment_list,
+            commands::adjust::adjustment_set_status,
+            commands::adjust::adjustment_cancel,
+            commands::adjust::student_list,
+            commands::adjust::entry_picks,
         ])
         .run(tauri::generate_context!())
         .expect("앱을 시작하지 못했습니다");

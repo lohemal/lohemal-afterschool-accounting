@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use crate::db::Db;
 use crate::domain::money::format_won as w;
 use crate::model::{PreviewRequest, ProgramMapInput};
-use crate::repo::{allocation, program, recon, upload, year};
+use crate::repo::{adjustment, allocation, program, recon, upload, year};
 
 fn real_dir() -> PathBuf {
     PathBuf::from(std::env::var("ASACCOUNTING_REAL_DIR").expect("ASACCOUNTING_REAL_DIR"))
@@ -159,6 +159,32 @@ fn real_september_recon() {
     let src = t.db.read(|c| recon::source_row(c, d.expenditure[0].source_row_id.unwrap())).unwrap();
     assert!(src.row_no > 0 && !src.cells.is_empty());
     println!("\n원본 추적 확인: '{}' {} 지급 거래 {}건 → {} 시트 {}행 등 원본 행 연결", m.unit_name, m.item_label, d.expenditure.len(), src.sheet, src.row_no);
+
+    // ── P3 연동: 바둑 교재·재료비 '총액 일치 · 재원 불일치' 에 담당자가 재원경정을 등록하는 흐름 ─────
+    let baduk = r2.rows.iter().find(|r| r.unit_name == "바둑" && r.item_set == "textbook_material").expect("바둑 교재·재료비");
+    assert!(baduk.total_match_fund_mismatch, "{:?}", baduk.status_label);
+    let voucher = baduk.funds.iter().find(|f| f.diff == Some(12_000)).unwrap().fund_id.unwrap();
+    let ben = baduk.funds.iter().find(|f| f.diff == Some(-12_000)).unwrap().fund_id.unwrap();
+    let item = t.db.read(|c| crate::repo::catalog::amount_item_by_code(c, "textbook_material")).unwrap().id;
+    let input = crate::model::AdjustmentInput {
+        school_year_id: t.year_id, fiscal_month_id: t.sep, kind: "fund_transfer".into(), program_id: baduk.unit_id, student_id: None,
+        from_fund_id: Some(voucher), to_fund_id: Some(ben), fund_type_id: None, amount_item_id: item, amount: 12_000,
+        decided_on: Some("2026-10-13".into()), processed_on: Some("2026-10-13".into()), status: "done".into(),
+        reason: "실제 자료 점검 — 이용권 12,000 을 일반 수익자로 경정(시험)".into(), related_entry_id: None, related_adjustment_id: None, confirm_duplicate: false,
+    };
+    let p = t.db.read(|c| adjustment::preview(c, &input)).unwrap();
+    println!("\n## P3 — 바둑 교재·재료비 재원경정 미리보기 (프로그램 단위)");
+    for f in &p.funds { println!("{}: {} → {} ({})", f.fund_name, w(f.before), w(f.after), w(f.change)); }
+    println!("전체 기준액 {} → {}", w(p.total_before), w(p.total_after));
+    assert!(p.blocked.is_empty(), "{:?}", p.blocked);
+    assert_eq!(p.total_before, p.total_after);
+    t.db.write(|tx| adjustment::create(tx, &input)).unwrap();
+    let r3 = t.db.read(|c| recon::month(c, t.sep)).unwrap();
+    let after = r3.rows.iter().find(|r| r.unit_name == "바둑" && r.item_set == "textbook_material").unwrap();
+    println!("경정 후: 상태 {} · 단순 차액 {} · 대조 차액 {} · 재원경정 {}건", after.status_label, w(after.simple_diff), w(after.diff), after.transfer_count);
+    assert_eq!(after.status, "ok");
+    assert_eq!(after.basis, baduk.basis, "전체 기준액은 그대로");
+    assert_eq!(after.transfer_count, 2);
 }
 
 impl T {

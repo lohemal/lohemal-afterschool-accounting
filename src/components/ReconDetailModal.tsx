@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 
 import { Modal } from '@/components/Modal'
 import { NoteBadge, StatusBadge } from '@/components/ReconTable'
@@ -26,6 +27,7 @@ export function ReconDetailModal({ fiscalMonthId, row, onClose }: { fiscalMonthI
   const [reason, setReason] = useState('')
   const [source, setSource] = useState<number | null>(null)
   const [view, setView] = useState<'detail' | 'merged'>('detail')
+  const navigate = useNavigate()
   const [busy, setBusy] = useState(false)
   const d = q.data
 
@@ -148,6 +150,14 @@ export function ReconDetailModal({ fiscalMonthId, row, onClose }: { fiscalMonthI
             </table>
           </div>
           {d.row.totalMatchFundMismatch && <div className="notice notice--soon" style={{ marginTop: 8 }}>🟡 <strong>총액 일치 · 재원 불일치</strong> — 비교 가능한 재원의 총액은 같지만 재원별로 어긋납니다. 정상으로 처리하지 않습니다 (재원 간 이동 확인 대상).</div>}
+          {d.row.status === 'mismatch' && d.row.unitKind === 'program' && d.row.funds.some((f) => f.state === 'mismatch') && (
+            <div className="row" style={{ marginTop: 8 }}>
+              <Button onClick={() => { onClose(); navigate('/adjust', { state: { tab: 'transfer', fiscalMonthId, programId: d.row.unitId, itemSet: d.row.itemSet, funds: d.row.funds.filter((f) => f.diff !== null && f.diff !== 0).map((f) => ({ fundId: f.fundId, fundName: f.fundName, diff: f.diff })) } }) }}>
+                재원경정 등록…
+              </Button>
+              <span className="muted" style={{ fontSize: 12 }}>재원별 차액이 있어도 자동으로 경정하지 않습니다. 경정 방향과 금액은 원본 회계자료를 보고 담당자가 정합니다.</span>
+            </div>
+          )}
 
           {d.row.hints.length > 0 && (
             <div className="notice" style={{ display: 'block', marginTop: 10 }}>

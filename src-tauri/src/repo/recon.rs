@@ -58,6 +58,7 @@ pub fn status_label(s: &str) -> &'static str {
         "unmapped" => "매핑 미확정",
         "unverifiable" => "검증 불가",
         "group_only" => "그룹으로 검증",
+        "orphan" => "원본 재확인 필요",
         _ => "알 수 없음",
     }
 }
@@ -77,6 +78,7 @@ pub fn status_rank(s: &str) -> i32 {
     match s {
         "unallocated" => 0,
         "unmapped" => 1,
+        "orphan" => 1,
         "mismatch" => 2,
         "missing" => 3,
         "group_only" => 4,
@@ -181,7 +183,8 @@ fn load_entries(conn: &Connection, month: i64, idx: &FundIndex) -> AppResult<Vec
     let mut st = conn.prepare(
         "SELECT e.id, e.program_id, e.program_group_id, e.student_id, e.fund_type_id, i.code, e.flow, e.entry_kind, e.amount
            FROM ledger_entry e JOIN amount_item i ON i.id = e.amount_item_id
-          WHERE e.fiscal_month_id = ?1 AND e.state = 'active' AND e.flow IN ('collection', 'expenditure')
+          WHERE e.fiscal_month_id = ?1 AND e.state = 'active' AND e.stage = 'actual'
+            AND e.flow IN ('collection', 'expenditure', 'transfer')
           ORDER BY e.id",
     )?;
     let rows = st.query_map([month], |r| {
@@ -231,7 +234,12 @@ struct Cell {
     initial: i64,
     extra: i64,
     refund: i64,
+    /// 재원경정으로 들어오고 나간 금액의 합 (항상 0 이어야 한다)
+    transfer: i64,
     allocated_in: i64,
+    /// 원본 거래가 취소된 정정이 만든 거래가 섞여 있다
+    orphan: bool,
+    transfer_entries: i64,
     basis_by_fund: BTreeMap<FundKey, i64>,
     expense_by_fund: BTreeMap<FundKey, i64>,
     basis_entries: BTreeSet<i64>,
@@ -242,6 +250,9 @@ struct Cell {
 }
 
 impl Cell {
+    fn transfer_count(&self) -> i64 {
+        self.transfer_entries
+    }
     fn unmapped(&self) -> bool {
         self.basis_by_fund.contains_key(&None) || self.expense_by_fund.contains_key(&None)
     }
@@ -249,7 +260,10 @@ impl Cell {
         self.initial += o.initial;
         self.extra += o.extra;
         self.refund += o.refund;
+        self.transfer += o.transfer;
+        self.transfer_entries += o.transfer_entries;
         self.allocated_in += o.allocated_in;
+        self.orphan |= o.orphan;
         for (f, v) in &o.basis_by_fund {
             *self.basis_by_fund.entry(*f).or_default() += v;
         }
@@ -275,6 +289,7 @@ fn compute(conn: &Connection, month: i64) -> AppResult<Computed> {
     let idx = FundIndex::load(conn)?;
     let entries = load_entries(conn, month, &idx)?;
     let allocs = load_allocations(conn, month)?;
+    let orphans: std::collections::HashSet<i64> = crate::repo::adjustment::orphan_entry_ids(conn, month)?.into_iter().collect();
     let mut members: HashMap<i64, Vec<i64>> = HashMap::new();
     let mut st = conn.prepare("SELECT group_id, program_id FROM program_group_member ORDER BY group_id, program_id")?;
     for row in st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))? {
@@ -290,8 +305,10 @@ fn compute(conn: &Connection, month: i64) -> AppResult<Computed> {
 
     for e in &entries {
         let set = item_set_of(&e.item_code);
-        if e.flow == "collection" {
-            coll += e.amount;
+        if e.flow == "collection" || e.flow == "transfer" {
+            if e.flow == "collection" {
+                coll += e.amount;
+            }
             if e.student_id.is_none() && e.program_id.is_none() && e.group_id.is_none() {
                 unlinked += 1;
             }
@@ -301,7 +318,13 @@ fn compute(conn: &Connection, month: i64) -> AppResult<Computed> {
                 _ => None,
             };
             match unit {
-                Some(u) => add_basis(cells.entry((u, set)).or_default(), e, e.amount, false, None),
+                Some(u) => {
+                    let c = cells.entry((u, set)).or_default();
+                    add_basis(c, e, e.amount, false, None);
+                    if orphans.contains(&e.id) {
+                        c.orphan = true;
+                    }
+                }
                 None => {
                     let mut rest = e.amount;
                     if let Some(list) = allocs.get(&e.id) {
@@ -327,6 +350,9 @@ fn compute(conn: &Connection, month: i64) -> AppResult<Computed> {
             c.has_expense = true;
             c.expense_entries.insert(e.id);
             *c.expense_by_fund.entry(e.fund).or_default() += e.amount;
+            if orphans.contains(&e.id) {
+                c.orphan = true;
+            }
         }
     }
     // 그룹 기준액 = 구성 프로그램 기준액 합 (그룹 칸이 있을 때만; 대시보드 합계에 겹쳐 더하지 않는다)
@@ -361,6 +387,10 @@ fn add_basis(c: &mut Cell, e: &E, amount: i64, via_alloc: bool, alloc_id: Option
     match e.kind.as_str() {
         "extra_collect" => c.extra += amount,
         "refund" => c.refund += amount,
+        "fund_transfer" => {
+            c.transfer += amount;
+            c.transfer_entries += 1;
+        }
         _ => c.initial += amount,
     }
     if via_alloc {
@@ -510,6 +540,13 @@ fn build_row(conn: &Connection, month: i64, cp: &Computed, unit: Unit, set: &'st
     if c.allocated_in != 0 {
         hints.push("배분으로 귀속된 징수액이 포함되어 있습니다.".into());
     }
+    if c.transfer != 0 {
+        hints.push(format!("재원경정 쌍의 합이 0 이 아닙니다({}). 원장 점검이 필요합니다.", w(c.transfer)));
+    }
+    let n_transfer = c.transfer_count();
+    if n_transfer > 0 {
+        hints.push(format!("재원경정 {}건이 재원별 기준액에 반영되어 있습니다(전체 기준액은 그대로).", n_transfer));
+    }
     for x in &excluded {
         if x.reason.starts_with("징수") {
             hints.push(format!("재원 '{}' 지급 {} 은(는) 징수 기준 자료가 없어 비교에서 뺐습니다 (재원 성격이 아니라 근거 자료 부족 때문).", x.fund_name, w(x.expense)));
@@ -526,6 +563,9 @@ fn build_row(conn: &Connection, month: i64, cp: &Computed, unit: Unit, set: &'st
     } else if group_paid {
         hints.push("지급이 프로그램 그룹으로 묶여 있어 개별 프로그램 지급액은 확인되지 않습니다.".into());
         "group_only"
+    } else if c.orphan {
+        hints.push("근거 원본 거래가 취소된 수동 정정이 섞여 있습니다. 정정 이력에서 '원본 재확인 필요' 항목을 확인해 주세요.".into());
+        "orphan"
     } else if unallocated_in_set != 0 {
         hints.push(format!(
             "이 달의 {} 미배분 징수액 {} 이 남아 있어 프로그램별 기준액이 완전하지 않습니다.",
@@ -582,6 +622,7 @@ fn build_row(conn: &Connection, month: i64, cp: &Computed, unit: Unit, set: &'st
         initial: c.initial,
         extra: c.extra,
         refund: c.refund,
+        transfer_count: c.transfer_count(),
         allocated_in: c.allocated_in,
         basis,
         expense,
@@ -621,7 +662,7 @@ pub fn month(conn: &Connection, fiscal_month_id: i64) -> AppResult<MonthRecon> {
     let comparable_expense = counted.iter().filter(|r| matches!(r.status.as_str(), "ok" | "mismatch")).map(|r| r.comparable_expense).sum();
     let excluded_basis = counted.iter().map(|r| if matches!(r.status.as_str(), "ok" | "mismatch") { r.excluded_basis + r.unmapped_basis } else { r.basis }).sum::<i64>() + cp.unallocated_total;
     let excluded_expense = counted.iter().map(|r| if matches!(r.status.as_str(), "ok" | "mismatch") { r.excluded_expense + r.unmapped_expense } else { r.expense }).sum();
-    let todo_count = rows.iter().filter(|r| matches!(r.status.as_str(), "mismatch" | "unallocated" | "unmapped") && r.note_status != "explained" || r.needs_recheck).count() as i64;
+    let todo_count = rows.iter().filter(|r| matches!(r.status.as_str(), "mismatch" | "unallocated" | "unmapped" | "orphan") && r.note_status != "explained" || r.needs_recheck).count() as i64;
     Ok(MonthRecon {
         fiscal_month_id,
         collection_total: cp.collection_total,
@@ -833,7 +874,7 @@ fn item_code_of(conn: &Connection, entry_id: i64) -> AppResult<String> {
 
 impl TraceEntry {
     fn flow_is_collection(&self) -> bool {
-        matches!(self.entry_kind.as_str(), "initial_collect" | "extra_collect" | "refund" | "adjustment")
+        matches!(self.entry_kind.as_str(), "initial_collect" | "extra_collect" | "refund" | "adjustment" | "fund_transfer")
     }
 }
 
