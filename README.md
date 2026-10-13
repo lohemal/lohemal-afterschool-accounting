@@ -10,11 +10,11 @@ Windows 로컬 데스크톱 프로그램입니다. 모든 차액을 자동으로
 
 ## 현재 단계
 
-**P6 — 배포 준비(백업 암호화 · 사용자 지정 백업 경로 · 월 확정 지문 · NSIS 설치본 · 서명 업데이트) 완료, v0.1.0.** 배포·자료 위치는 [docs/07-P6-배포준비.md](docs/07-P6-배포준비.md), 운영 규칙은 [docs/06-P5-운영.md](docs/06-P5-운영.md). 자유수강권 규칙은 [docs/05-P4-자유수강권.md](docs/05-P4-자유수강권.md) (10장이 P4.1).
+**P7-1 — v0.1.0 첫 배포 완료(2026-10-13).** 저장소 [lohemal/lohemal-afterschool-accounting](https://github.com/lohemal/lohemal-afterschool-accounting), Release [v0.1.0](https://github.com/lohemal/lohemal-afterschool-accounting/releases/tag/v0.1.0). 배포·검증 기록은 [docs/07-P6-배포준비.md](docs/07-P6-배포준비.md) 10장, 운영 규칙은 [docs/06-P5-운영.md](docs/06-P5-운영.md). 자유수강권 규칙은 [docs/05-P4-자유수강권.md](docs/05-P4-자유수강권.md) (10장이 P4.1).
 정정 규칙은 [docs/04-P3-회계-정정.md](docs/04-P3-회계-정정.md), 설계와 DB 구조는 [docs/01-P0-설계.md](docs/01-P0-설계.md),
 업로드·되돌리기 규칙은 [docs/02-P1-업로드와-되돌리기.md](docs/02-P1-업로드와-되돌리기.md),
 배분·대조 규칙과 실제 9월 검증 결과는 [docs/03-P2-대조와-배분.md](docs/03-P2-대조와-배분.md) 를 보세요.
-외부 배포(저장소 공개·push·Release)는 사용자 승인 후 진행합니다.
+외부 배포(push·태그·Release)는 사용자 승인 후 진행합니다. 자동 업데이트 실측(P7-2)은 아직 하지 않았습니다.
 
 ## 실행·검사
 

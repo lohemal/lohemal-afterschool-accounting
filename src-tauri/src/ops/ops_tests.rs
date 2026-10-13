@@ -804,8 +804,14 @@ fn p6_e_installer_signature_verifies_with_public_key() {
     use base64::Engine as _;
     let pub_txt = String::from_utf8(base64::engine::general_purpose::STANDARD.decode(pub_b64).unwrap()).unwrap();
     let pk = minisign_verify::PublicKey::decode(&pub_txt).unwrap();
-    let dir = root.join("target/release/bundle/nsis");
-    let exe = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).find(|p| p.to_string_lossy().ends_with("-setup.exe")).expect("설치본");
+    // ASACCOUNTING_VERIFY_EXE 가 있으면 그 파일(예: Release 에서 내려받은 설치본)을 검증한다.
+    let exe = match std::env::var("ASACCOUNTING_VERIFY_EXE") {
+        Ok(p) => PathBuf::from(p),
+        Err(_) => {
+            let dir = root.join("target/release/bundle/nsis");
+            std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).find(|p| p.to_string_lossy().ends_with("-setup.exe")).expect("설치본")
+        }
+    };
     let sig_path = PathBuf::from(format!("{}.sig", exe.display()));
     let sig_txt = String::from_utf8(base64::engine::general_purpose::STANDARD.decode(std::fs::read_to_string(&sig_path).unwrap().trim()).unwrap()).unwrap();
     let sig = minisign_verify::Signature::decode(&sig_txt).unwrap();
@@ -816,6 +822,10 @@ fn p6_e_installer_signature_verifies_with_public_key() {
     tampered[1000] ^= 0xFF;
     assert!(pk.verify(&tampered, &sig, false).is_err());
     // 설치본(NSIS 압축)과 실행 파일 안에 자료·키가 없다 (개인정보·개인키 문자열 검색). 업데이트 주소·공개키는 실행 파일에 들어 있다.
+    if std::env::var("ASACCOUNTING_VERIFY_EXE").is_ok() {
+        println!("서명 검증 통과: {}", exe.display());
+        return;
+    }
     let app = std::fs::read(root.join("target/release/asaccounting.exe")).unwrap();
     let priv_key = std::fs::read_to_string(std::path::Path::new(&std::env::var("USERPROFILE").unwrap()).join(".tauri/asaccounting.key")).unwrap();
     let priv_line = priv_key.lines().last().unwrap().trim().to_string();
