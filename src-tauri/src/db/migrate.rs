@@ -73,6 +73,13 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../migrations/007_voucher_policy.sql"),
         fk_off: false,
     },
+    // 방과후이용권 대상 여부 · 학기 공백 확인 표시. 기존 표 보존.
+    Migration {
+        version: 8,
+        name: "008_ops",
+        sql: include_str!("../../migrations/008_ops.sql"),
+        fk_off: false,
+    },
 ];
 
 pub fn latest_version() -> i32 {
@@ -166,7 +173,7 @@ fn apply_one_without_fk(conn: &mut Connection, m: &Migration) -> AppResult<()> {
     Ok(())
 }
 
-/// 마이그레이션 직전 백업. 메모리 DB 면 건너뛴다.
+/// 마이그레이션 직전 백업 — P5 백업 패키지(zip, 검증 포함)로 만든다. 메모리 DB 면 건너뛴다.
 fn backup_before_migrate(conn: &Connection, from: i32) -> AppResult<Option<String>> {
     let Some(path) = conn.path().map(|p| p.to_string()) else {
         return Ok(None);
@@ -175,20 +182,9 @@ fn backup_before_migrate(conn: &Connection, from: i32) -> AppResult<Option<Strin
         return Ok(None);
     }
     let db_path = std::path::Path::new(&path);
-    let dir = db_path
-        .parent()
-        .ok_or_else(|| AppError::new("IO", "자료 폴더를 찾지 못했습니다."))?
-        .join("backups");
-    std::fs::create_dir_all(&dir)?;
-    let name = format!(
-        "before-migrate-v{from}-{}.db",
-        chrono::Local::now().format("%Y%m%d-%H%M%S")
-    );
-    let dest = dir.join(&name);
-    let mut out = Connection::open(&dest)?;
-    let backup = rusqlite::backup::Backup::new(conn, &mut out)?;
-    backup.run_to_completion(256, std::time::Duration::from_millis(5), None)?;
-    Ok(Some(name))
+    let data_dir = db_path.parent().ok_or_else(|| AppError::new("IO", "자료 폴더를 찾지 못했습니다."))?;
+    let info = crate::ops::backup::create(conn, data_dir, "migration", &format!("스키마 v{from} → v{} 마이그레이션 직전", latest_version()))?;
+    Ok(Some(info.file_name))
 }
 
 #[cfg(test)]
@@ -295,6 +291,7 @@ mod tests {
             "program_group", "program_group_member", "student", "upload_file", "upload_row", "upload_apply",
             "source_row", "ledger_entry", "ledger_correction", "month_close", "audit_log", "app_setting", "allocation", "recon_note", "adjustment", "adjustment_entry", "adjustment_status_log",
             "voucher_policy", "voucher_exception", "voucher_target", "voucher_target_log", "voucher_batch", "voucher_batch_item", "voucher_refund", "voucher_policy_item",
+            "after_voucher_target", "after_voucher_target_log",
         ] {
             assert!(names.iter().any(|n| n == t), "표 {t} 가 없다: {names:?}");
         }

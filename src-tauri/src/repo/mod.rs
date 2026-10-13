@@ -6,6 +6,7 @@ pub mod allocation;
 pub mod audit;
 pub mod catalog;
 pub mod fundalias;
+pub mod integrity;
 pub mod ledger;
 pub mod program;
 pub mod recon;

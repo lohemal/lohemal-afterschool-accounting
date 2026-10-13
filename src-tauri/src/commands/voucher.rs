@@ -104,3 +104,13 @@ pub fn voucher_refund_complete(db: State<Db>, adjustment_id: i64, processed_on: 
 pub fn voucher_history(db: State<Db>, school_year_id: i64) -> AppResult<VoucherHistory> {
     db.read(|c| voucher::history(c, school_year_id))
 }
+
+#[tauri::command]
+pub fn after_voucher_target_list(db: State<Db>, school_year_id: i64) -> AppResult<Vec<AfterVoucherTarget>> {
+    db.read(|c| voucher::av_target_list(c, school_year_id))
+}
+
+#[tauri::command]
+pub fn after_voucher_target_save(db: State<Db>, input: AfterVoucherTargetInput) -> AppResult<AfterVoucherTarget> {
+    db.write(|tx| voucher::av_target_save(tx, &input))
+}

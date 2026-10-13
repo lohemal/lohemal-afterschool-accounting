@@ -56,6 +56,18 @@ import type {
   VoucherTarget,
   VoucherTargetInput,
   VoucherUsage,
+  AfterVoucherTarget,
+  AfterVoucherTargetInput,
+  BackupInfo,
+  BackupList,
+  BackupVerify,
+  ExportResult,
+  IntegrityReport,
+  OpsRecord,
+  ReconExportFilter,
+  RefundExportFilter,
+  RestorePreview,
+  RestoreResult,
 } from './types'
 
 export const api = {
@@ -133,6 +145,22 @@ export const api = {
   voucherRefundRegister: (input: VoucherRefundInput) => invoke<Adjustment>('voucher_refund_register', { input }),
   voucherRefundComplete: (adjustmentId: number, processedOn: string, collectedConfirmed: boolean, evidence: string) => invoke<Adjustment>('voucher_refund_complete', { adjustmentId, processedOn, collectedConfirmed, evidence }),
   voucherHistory: (schoolYearId: number) => invoke<VoucherHistory>('voucher_history', { schoolYearId }),
+  afterVoucherTargetList: (schoolYearId: number) => invoke<AfterVoucherTarget[]>('after_voucher_target_list', { schoolYearId }),
+  afterVoucherTargetSave: (input: AfterVoucherTargetInput) => invoke<AfterVoucherTarget>('after_voucher_target_save', { input }),
+
+  backupList: () => invoke<BackupList>('backup_list'),
+  backupCreate: (note?: string) => invoke<BackupInfo>('backup_create', { note }),
+  backupSettingsSet: (autoEnabled: boolean, keep: number) => invoke<void>('backup_settings_set', { autoEnabled, keep }),
+  backupVerify: (path: string) => invoke<BackupVerify>('backup_verify', { path }),
+  restoreInspect: (path: string) => invoke<RestorePreview>('restore_inspect', { path }),
+  restoreApply: (path: string, confirm: boolean) => invoke<RestoreResult>('restore_apply', { path, confirm }),
+  integrityRun: (schoolYearId: number) => invoke<IntegrityReport>('integrity_run', { schoolYearId }),
+  opsHistory: (limit?: number) => invoke<OpsRecord[]>('ops_history', { limit }),
+  exportRecon: (fiscalMonthId: number, filter: ReconExportFilter, path: string) => invoke<ExportResult>('export_recon', { fiscalMonthId, filter, path }),
+  exportVoucherUsage: (schoolYearId: number, path: string) => invoke<ExportResult>('export_voucher_usage', { schoolYearId, path }),
+  exportVoucherRefunds: (schoolYearId: number, filter: RefundExportFilter, path: string) => invoke<ExportResult>('export_voucher_refunds', { schoolYearId, filter, path }),
+  exportIntegrity: (schoolYearId: number, path: string) => invoke<ExportResult>('export_integrity', { schoolYearId, path }),
+  exportDefaultName: (kind: string, schoolYearId: number, fiscalMonthId?: number | null) => invoke<string>('export_default_name', { kind, schoolYearId, fiscalMonthId }),
 }
 
 export function isAppError(e: unknown): e is AppError {

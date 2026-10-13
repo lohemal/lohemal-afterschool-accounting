@@ -5,6 +5,7 @@ import { Button, ToastProvider } from '@/components/ui'
 import { errorMessage } from '@/ipc/api'
 import { AppProvider } from '@/lib/useApp'
 import { DashboardPage } from '@/pages/DashboardPage'
+import { DataPage } from '@/pages/DataPage'
 import { AdjustPage } from '@/pages/AdjustPage'
 import { DiffPage } from '@/pages/DiffPage'
 import { FundsPage } from '@/pages/FundsPage'
@@ -60,6 +61,7 @@ export default function App() {
               <Route path="/adjust" element={<AdjustPage />} />
               <Route path="/voucher" element={<VoucherPage />} />
               <Route path="/history" element={<HistoryPage />} />
+              <Route path="/data" element={<DataPage />} />
               <Route path="/settings" element={<SettingsPage />} />
             </Route>
           </Routes>

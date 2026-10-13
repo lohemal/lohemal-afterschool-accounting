@@ -206,6 +206,24 @@ fn real_september_recon() {
     assert_eq!(h.policy_history.len(), 1);
     let r4 = t.db.read(|c| recon::month(c, t.sep)).unwrap();
     assert_eq!(r4.rows.len(), r3.rows.len(), "정책 등록은 대조 결과를 바꾸지 않는다");
+
+    // ── P5 연동: 실제 자료 위에서 무결성 검사·Excel 내보내기 (메모리 DB, 임시 폴더) ─────
+    println!("
+## P5 — 무결성 검사 · 내보내기 (실제 9월 자료)");
+    let tmp = tempfile::tempdir().unwrap();
+    let dd = tmp.path().to_path_buf();
+    let rep = t.db.read(|c| crate::repo::integrity::run(c, &dd, t.year_id)).unwrap();
+    println!("무결성: 정상 {} · 확인 필요 {} · 오류 {}", rep.ok_count, rep.check_count, rep.error_count);
+    for it in rep.items.iter().take(12) {
+        println!("  [{}] {} — {}", crate::repo::integrity::level_label(&it.level), it.title, it.detail);
+    }
+    assert_eq!(rep.error_count, 0, "{:?}", rep.items.iter().filter(|i| i.level == "error").map(|i| &i.detail).collect::<Vec<_>>());
+    let out = dd.join("월별검증.xlsx");
+    let x = t.db.read(|c| crate::ops::export::recon_month(c, &dd, t.sep, &crate::model::ReconExportFilter::default(), &out)).unwrap();
+    println!("Excel 월별 검증: {}행 → {}", x.rows, out.display());
+    assert!(x.rows > 0 && out.exists());
+    let x2 = t.db.read(|c| crate::ops::export::integrity_report(c, &dd, t.year_id, &dd.join("무결성.xlsx"))).unwrap();
+    println!("Excel 무결성: {}행", x2.rows);
 }
 
 impl T {

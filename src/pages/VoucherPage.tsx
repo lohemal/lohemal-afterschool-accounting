@@ -7,6 +7,8 @@ import { api, errorMessage } from '@/ipc/api'
 import { diff, shortDateTime, won } from '@/lib/format'
 import { useApp } from '@/lib/useApp'
 import type {
+  AfterVoucherStatus,
+  AfterVoucherTarget,
   VoucherBasis,
   VoucherDecision,
   VoucherException,
@@ -20,7 +22,7 @@ import type {
   VoucherUsage,
 } from '@/ipc/types'
 
-type Tab = 'targets' | 'policy' | 'usage' | 'retro' | 'refund' | 'transfer' | 'history'
+type Tab = 'targets' | 'policy' | 'usage' | 'retro' | 'refund' | 'transfer' | 'avtarget' | 'history'
 
 const TABS: [Tab, string][] = [
   ['targets', '대상자 관리'],
@@ -29,13 +31,15 @@ const TABS: [Tab, string][] = [
   ['retro', '소급 지원 계산'],
   ['refund', '환불 처리'],
   ['transfer', '전입생 관리'],
+  ['avtarget', '이용권 대상'],
   ['history', '처리 이력'],
 ]
 
 const today = () => new Date().toISOString().slice(0, 10)
 
 const TARGET_CLS: Record<string, string> = { pending: 'badge badge--soon', confirmed: 'badge badge--ok', ended: 'badge badge--muted', cancelled: 'badge badge--muted' }
-const USAGE_CLS: Record<string, string> = { ok: 'badge badge--ok', retro: 'badge badge--navy', over: 'badge badge--bad', decide: 'badge badge--soon', pending: 'badge badge--soon', outside: 'badge badge--muted', excluded: 'badge badge--muted' }
+const USAGE_CLS: Record<string, string> = { ok: 'badge badge--ok', retro: 'badge badge--navy', over: 'badge badge--bad', decide: 'badge badge--soon', pending: 'badge badge--soon', outside: 'badge badge--muted', excluded: 'badge badge--muted', dup_check: 'badge badge--soon' }
+const AV_CLS: Record<string, string> = { none: 'badge badge--bad', unconfirmed: 'badge badge--soon', eligible: 'badge badge--ok', ineligible: 'badge badge--muted', ended: 'badge badge--muted' }
 const PROPOSAL_CLS: Record<string, string> = { normal: 'badge badge--ok', check: 'badge badge--soon', blocked: 'badge badge--bad', decide: 'badge badge--soon', pending: 'badge badge--soon', over: 'badge badge--bad', short: 'badge badge--muted' }
 const REFUND_CLS: Record<string, string> = { none: 'badge badge--bad', planned: 'badge badge--soon', partial: 'badge badge--navy', complete: 'badge badge--ok', cancelled: 'badge badge--muted' }
 
@@ -64,6 +68,7 @@ export function VoucherPage() {
       {tab === 'retro' && <Retro yearId={year.id} />}
       {tab === 'refund' && <Refund yearId={year.id} />}
       {tab === 'transfer' && <TransferIn yearId={year.id} />}
+      {tab === 'avtarget' && <AfterVoucher yearId={year.id} />}
       {tab === 'history' && <History yearId={year.id} />}
     </Page>
   )
@@ -286,6 +291,7 @@ function Policy({ yearId }: { yearId: number }) {
   const [s2To, setS2To] = useState('')
   const [allItems, setAllItems] = useState(true)
   const [itemIds, setItemIds] = useState<number[]>([])
+  const [confirmGap, setConfirmGap] = useState(false)
   const [confirming, setConfirming] = useState<VoucherPolicyPreview | null>(null)
   const cat = useQuery({ queryKey: ['catalog'], queryFn: api.catalogList })
   const toast = useToast()
@@ -327,11 +333,13 @@ function Policy({ yearId }: { yearId: number }) {
     semester2From: s2From || null,
     semester2To: s2To || null,
     eligibleItemIds: allItems ? null : itemIds,
+    confirmGap,
     note,
   })
   async function openConfirm() {
     try {
-      setConfirming(await api.voucherPolicyPreview(policyInput()))
+      setConfirmGap(false)
+      setConfirming(await api.voucherPolicyPreview({ ...policyInput(), confirmGap: false }))
     } catch (e) {
       toast.show(errorMessage(e), true)
     }
@@ -339,7 +347,7 @@ function Policy({ yearId }: { yearId: number }) {
   const activeItems = (cat.data?.amountItems ?? []).filter((i) => i.isActive)
 
   const policyLabel = (p: VoucherPolicy | VoucherException) => (p.basis === 'annual' ? `연간 ${won(p.annualLimit)}원` : p.basis === 'semester' ? `1학기 ${won(p.semester1Limit)}원 · 2학기 ${won(p.semester2Limit)}원 · ${p.carryOver ? '잔액 이월' : '이월 없음'}` : '제한 없음')
-  const policyExtra = (p: VoucherPolicy) => `${p.semesterDefault ? '기본 학기' : `1학기 ${p.semester1From}~${p.semester1To} · 2학기 ${p.semester2From}~${p.semester2To}`}${p.uncoveredMonths.length ? ` · 미지원 ${p.uncoveredMonths.join(',')}` : ''} · 항목: ${p.allItemsEligible ? '모든 항목' : p.eligibleItemNames.join('·')}`
+  const policyExtra = (p: VoucherPolicy) => `${p.semesterDefault ? '기본 학기' : `1학기 ${p.semester1From}~${p.semester1To} · 2학기 ${p.semester2From}~${p.semester2To}`}${p.uncoveredMonths.length ? ` · 미지원 ${p.uncoveredMonths.join(',')}${p.gapConfirmed ? '(확인됨)' : ''}` : ''} · 항목: ${p.allItemsEligible ? '모든 항목' : p.eligibleItemNames.join('·')}`
 
   return (
     <>
@@ -411,12 +419,18 @@ function Policy({ yearId }: { yearId: number }) {
         )}
       </Card>
       {confirming && (
-        <Modal title="지원 한도 정책 저장" onClose={() => setConfirming(null)} footer={<><Button onClick={() => setConfirming(null)}>취소</Button><Button variant="primary" disabled={confirming.blocked.length > 0} onClick={() => run(() => api.voucherPolicySave(policyInput()), '정책을 저장했습니다.', () => setConfirming(null))}>저장</Button></>}>
+        <Modal title="지원 한도 정책 저장" onClose={() => setConfirming(null)} footer={<><Button onClick={() => setConfirming(null)}>취소</Button><Button variant="primary" disabled={confirming.blocked.filter((b) => !(confirming.gapNeedsConfirm && b.includes('공백 기간 확인'))).length > 0 || (confirming.gapNeedsConfirm && !confirmGap)} onClick={() => run(() => api.voucherPolicySave({ ...policyInput(), confirmGap }), '정책을 저장했습니다.', () => setConfirming(null))}>저장</Button></>}>
           <p style={{ marginTop: 0 }}>{basis === 'annual' ? `연간 ${won(annual)}원` : basis === 'semester' ? `1학기 ${won(s1)}원 · 2학기 ${won(s2)}원 · ${carry ? '잔액 이월' : '이월 없음'}` : '제한 없음'} 으로 저장합니다. 이전 정책은 이력으로 남습니다.</p>
           <p className="muted">학기: 1학기 {confirming.semester1From} ~ {confirming.semester1To} · 2학기 {confirming.semester2From} ~ {confirming.semester2To}<br />지원 대상 항목: {confirming.eligibleItemNames.join(' · ')}</p>
           {confirming.affectedTransferCount > 0 && <Notice>지원 대상에서 빠지는 항목에 이미 등록된 자유수강권 경정 {confirming.affectedTransferCount}건 · {won(confirming.affectedTransferTotal)}원이 있습니다. 완료된 경정은 자동으로 취소·수정하지 않습니다.</Notice>}
           {confirming.warnings.map((w) => <div key={w} className="notice notice--soon" style={{ marginTop: 6 }}>{w}</div>)}
-          {confirming.blocked.map((b) => <Notice key={b} kind="bad">{b}</Notice>)}
+          {confirming.gapNeedsConfirm && (
+            <div className="notice notice--bad" style={{ display: 'block', marginTop: 6 }}>
+              <strong>설정된 학기 기간에 포함되지 않는 {confirming.uncoveredMonths.join(', ')} 은(는) 자유수강권 지원액이 0원으로 계산됩니다. 이 설정을 유지하시겠습니까?</strong>
+              <label className="row" style={{ marginTop: 6 }}><input type="checkbox" checked={confirmGap} onChange={(e) => setConfirmGap(e.target.checked)} /> 공백 기간 확인 — 위 달을 미지원 기간으로 두겠습니다</label>
+            </div>
+          )}
+          {confirming.blocked.filter((b) => !(confirming.gapNeedsConfirm && b.includes('공백 기간 확인'))).map((b) => <Notice key={b} kind="bad">{b}</Notice>)}
         </Modal>
       )}
       {ending && (
@@ -440,6 +454,7 @@ function UsageSummary({ u }: { u: VoucherUsage }) {
       <div className="stat"><span>계산 지원액 (적용 기간)</span><strong>{won(u.usedExpected)}</strong></div>
       <div className="stat"><span>실제 자유수강권 사용액</span><strong>{won(u.usedActual)}</strong></div>
       <div className="stat"><span>방과후이용권 사용액 (별도){u.dual ? ' · 중복 대상자' : ''}</span><strong>{won(u.voucherTotal)}</strong></div>
+      <div className="stat"><span>방과후이용권 대상 여부</span><strong style={{ fontFamily: 'inherit', fontSize: 13 }}><span className={AV_CLS[u.voucherTargetStatus] ?? 'badge badge--muted'}>{u.voucherTargetStatusLabel}</span></strong></div>
       <div className="stat"><span>초3 초과금 / 일반 수익자</span><strong>{won(u.g3xTotal)} / {won(u.generalTotal)}</strong></div>
       {u.pendingTotal > 0 && <div className="stat stat--warn"><span>처리 예정 경정</span><strong>{won(u.pendingTotal)}</strong></div>}
       <div className="stat"><span>남은 한도</span><strong>{u.remaining === null ? (u.basis === 'unlimited' ? '제한 없음' : '—') : won(u.remaining)}</strong></div>
@@ -907,6 +922,99 @@ function TransferIn({ yearId }: { yearId: number }) {
           <div className="row" style={{ marginTop: 8 }}><label className="row"><input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} /> 이전 학교 자료로 확인했습니다 (확인 전에는 계산하지 않음)</label></div>
           <div className="row" style={{ marginTop: 8 }}><span className="label">근거 메모</span><input className="input" style={{ flex: 1 }} value={note} onChange={(e) => setNote(e.target.value)} placeholder="예: 전출교 공문 2026-09-03" /></div>
           <p className="muted">연간 한도면 연간 한도에서, 학기별 한도면 전입한 학기의 한도에서 뺍니다.</p>
+        </Modal>
+      )}
+    </>
+  )
+}
+
+/* ── 방과후이용권 대상 여부 (사용 실적과 분리) ───────────────── */
+
+function AfterVoucher({ yearId }: { yearId: number }) {
+  const run = useRun()
+  const list = useQuery({ queryKey: ['avTargets', yearId], queryFn: () => api.afterVoucherTargetList(yearId) })
+  const students = useQuery({ queryKey: ['students', yearId], queryFn: () => api.studentList(yearId) })
+  const [editing, setEditing] = useState<AfterVoucherTarget | 'new' | null>(null)
+  const [studentId, setStudentId] = useState<number | ''>('')
+  const [status, setStatus] = useState<AfterVoucherStatus>('unconfirmed')
+  const [from, setFrom] = useState('')
+  const [to, setTo] = useState('')
+  const [confirmedOn, setConfirmedOn] = useState('')
+  const [evidence, setEvidence] = useState('')
+  const [note, setNote] = useState('')
+  const [reason, setReason] = useState('')
+  const [open, setOpen] = useState<number | null>(null)
+  function start(t: AfterVoucherTarget | 'new') {
+    setEditing(t)
+    if (t === 'new') {
+      setStudentId(''); setStatus('unconfirmed'); setFrom(''); setTo(''); setConfirmedOn(''); setEvidence(''); setNote('')
+    } else {
+      setStudentId(t.studentId); setStatus(t.status === 'none' ? 'unconfirmed' : t.status); setFrom(t.applyFrom ?? ''); setTo(t.applyTo ?? ''); setConfirmedOn(t.confirmedOn ?? ''); setEvidence(t.evidence); setNote(t.note)
+    }
+    setReason('')
+  }
+  const rows = list.data ?? []
+  return (
+    <>
+      <Card title="방과후이용권 대상 여부" right={<Button variant="primary" onClick={() => start('new')}>대상 여부 등록…</Button>}>
+        <p className="muted" style={{ marginTop: 0 }}>대상 여부(기록)와 사용 실적(원장)은 다른 정보입니다. 실적이 있다는 이유로 대상자를 자동 확정하지 않습니다. 대상자로 확인되었거나 실적이 있으면 자유수강권 중복 대상자 규칙(초3 초과금 우선)을 적용하고, 대상 여부가 불확실하면 일반 수익자 금액은 재원 확인을 요청합니다.</p>
+        {list.error && <Notice kind="bad">{errorMessage(list.error)}</Notice>}
+        {list.data && rows.length === 0 && <Empty title="등록된 대상 여부도, 이용권 실적도 없습니다." />}
+        {rows.length > 0 && (
+          <div className="tableWrap">
+            <table className="table">
+              <thead><tr><th>학생</th><th className="center">대상 여부</th><th>적용 시작</th><th>적용 종료</th><th>확인일</th><th>확인 근거</th><th className="num">이용권 사용 실적</th><th>메모</th><th /></tr></thead>
+              <tbody>
+                {rows.map((t) => (
+                  <>
+                    <tr key={`${t.studentId}`} className={t.status === 'none' && t.actualTotal > 0 ? 'row--check' : ''}>
+                      <td>{t.student}</td>
+                      <td className="center"><span className={AV_CLS[t.status]}>{t.statusLabel}</span>{t.status === 'none' && t.actualTotal > 0 && <span className="muted" style={{ marginLeft: 4 }}>실적 있음 — 확인 필요</span>}</td>
+                      <td>{t.applyFrom ?? '—'}</td><td>{t.applyTo ?? (t.status === 'eligible' ? '계속' : '—')}</td><td>{t.confirmedOn ?? '—'}</td>
+                      <td className="wrap" style={{ fontSize: 12 }}>{t.evidence}</td>
+                      <td className="num">{won(t.actualTotal)}</td>
+                      <td className="wrap" style={{ fontSize: 12 }}>{t.note}</td>
+                      <td>
+                        <div className="row" style={{ gap: 4, flexWrap: 'nowrap' }}>
+                          <Button size="sm" onClick={() => start(t)}>{t.id ? '수정…' : '등록…'}</Button>
+                          {t.logs.length > 0 && <Button size="sm" onClick={() => setOpen(open === t.id ? null : t.id)}>이력 {t.logs.length}</Button>}
+                        </div>
+                      </td>
+                    </tr>
+                    {open === t.id && t.id !== 0 && (
+                      <tr key={`${t.studentId}-log`}><td colSpan={9} style={{ background: 'var(--bg-sub, #f7f7f9)' }}>
+                        <ul className="list" style={{ margin: 0 }}>{t.logs.map((l, i) => <li key={i}><span className="muted">{shortDateTime(l.at)}</span> · {l.action === 'register' ? '등록' : l.action === 'status' ? '상태 변경' : '변경'} {l.fromStatus || l.toStatus ? `(${l.fromStatus || '—'} → ${l.toStatus})` : ''} {l.detail}</li>)}</ul>
+                      </td></tr>
+                    )}
+                  </>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+      {editing && (
+        <Modal title="방과후이용권 대상 여부" onClose={() => setEditing(null)} width={720} footer={<><Button onClick={() => setEditing(null)}>닫기</Button><Button variant="primary" disabled={studentId === ''} onClick={() => run(() => api.afterVoucherTargetSave({ schoolYearId: yearId, studentId: studentId as number, status, applyFrom: from || null, applyTo: to || null, confirmedOn: confirmedOn || null, evidence, note, reason }), '대상 여부를 저장했습니다.', () => setEditing(null))}>저장</Button></>}>
+          <div className="upload__top">
+            <label className="field" style={{ gridColumn: 'span 2' }}><span>학생</span>
+              <select className="select" value={studentId} disabled={editing !== 'new'} onChange={(e) => setStudentId(e.target.value === '' ? '' : Number(e.target.value))}>
+                <option value="">— 선택 —</option>
+                {(students.data ?? []).map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+              </select>
+            </label>
+            <label className="field"><span>대상 여부</span>
+              <select className="select" value={status} onChange={(e) => setStatus(e.target.value as AfterVoucherStatus)}>
+                <option value="unconfirmed">미확인</option><option value="eligible">대상자</option><option value="ineligible">비대상자</option><option value="ended">지원 종료</option>
+              </select>
+            </label>
+            <label className="field"><span>대상 확인일</span><input className="input" type="date" value={confirmedOn} onChange={(e) => setConfirmedOn(e.target.value)} /></label>
+            <label className="field"><span>지원 적용 시작일</span><input className="input" type="date" value={from} onChange={(e) => setFrom(e.target.value)} /></label>
+            <label className="field"><span>지원 적용 종료일</span><input className="input" type="date" value={to} onChange={(e) => setTo(e.target.value)} /></label>
+            <label className="field" style={{ gridColumn: 'span 2' }}><span>확인 근거 (대상자 확정 때 필수)</span><input className="input" value={evidence} onChange={(e) => setEvidence(e.target.value)} placeholder="예: 교육청 방과후이용권 대상자 명단 2026-03-02" /></label>
+            <label className="field" style={{ gridColumn: 'span 2' }}><span>메모</span><input className="input" value={note} onChange={(e) => setNote(e.target.value)} /></label>
+            <label className="field" style={{ gridColumn: 'span 2' }}><span>변경 사유 (상태를 바꿀 때 필수)</span><input className="input" value={reason} onChange={(e) => setReason(e.target.value)} /></label>
+          </div>
+          <p className="muted" style={{ marginBottom: 0 }}>기존 이용권 사용 실적은 바뀌지 않습니다. 대상자로 확정하면 실적이 아직 없어도 중복 대상자 규칙이 적용됩니다.</p>
         </Modal>
       )}
     </>

@@ -73,6 +73,45 @@ impl Db {
         f(&guard)
     }
 
+    /// 파일 교체 작업(복원용). 잠금을 쥔 채 연결을 닫고(WAL 체크포인트) `f` 가 파일을 바꾼 뒤 다시 연다.
+    /// 잠금을 쥐고 있는 동안 다른 읽기·쓰기는 모두 기다린다. `f` 가 실패해도 원래 파일을 다시 연다.
+    /// 다시 열기에 실패하면 오류를 돌려주고 연결은 비어 있는 메모리 DB 로 남는다 — 호출자가 원상 복구 뒤 `reopen` 을 부른다.
+    pub fn with_file_swap(&self, f: impl FnOnce(&Path) -> AppResult<()>) -> AppResult<()> {
+        if self.path.as_os_str() == ":memory:" {
+            return Err(AppError::new("DB_SWAP", "메모리 DB 는 파일을 교체할 수 없습니다."));
+        }
+        let mut guard = self
+            .conn
+            .lock()
+            .map_err(|_| AppError::new("DB_LOCK", "자료 접근이 잠겨 있습니다."))?;
+        let old = std::mem::replace(&mut *guard, Connection::open_in_memory()?);
+        old.close().map_err(|(_, e)| AppError::new("DB_CLOSE", "자료 파일을 닫지 못했습니다.").detail(e.to_string()))?;
+        let result = f(&self.path);
+        let reopened = open_file_conn(&self.path);
+        match (result, reopened) {
+            (Ok(()), Ok(c)) => {
+                *guard = c;
+                Ok(())
+            }
+            (Err(e), Ok(c)) => {
+                *guard = c;
+                Err(e)
+            }
+            (Ok(()), Err(e)) => Err(e),
+            (Err(e), Err(e2)) => Err(e.detail(format!("다시 열기도 실패: {}", e2.message))),
+        }
+    }
+
+    /// 비어 있는 연결 상태에서 파일을 다시 연다 (복원 원상 복구 뒤).
+    pub fn reopen(&self) -> AppResult<()> {
+        let mut guard = self
+            .conn
+            .lock()
+            .map_err(|_| AppError::new("DB_LOCK", "자료 접근이 잠겨 있습니다."))?;
+        *guard = open_file_conn(&self.path)?;
+        Ok(())
+    }
+
     /// 쓰기 작업. 트랜잭션으로 감싸고, 오류가 나면 통째로 되돌린다.
     pub fn write<T>(
         &self,
@@ -87,6 +126,13 @@ impl Db {
         tx.commit()?;
         Ok(out)
     }
+}
+
+fn open_file_conn(path: &Path) -> AppResult<Connection> {
+    let mut conn = Connection::open(path).map_err(|e| AppError::new("DB_OPEN", "자료 파일을 열지 못했습니다.").detail(format!("{} :: {e}", path.display())))?;
+    setup_conn(&conn)?;
+    migrate::run(&mut conn)?;
+    Ok(conn)
 }
 
 fn setup_conn(conn: &Connection) -> AppResult<()> {

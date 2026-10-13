@@ -881,6 +881,8 @@ pub struct VoucherPolicy {
     pub eligible_item_ids: Vec<i64>,
     pub eligible_item_names: Vec<String>,
     pub all_items_eligible: bool,
+    /// 학기 공백 달을 담당자가 확인하고 저장했음
+    pub gap_confirmed: bool,
     pub note: String,
     pub created_at: String,
     pub superseded_at: Option<String>,
@@ -903,6 +905,9 @@ pub struct VoucherPolicyInput {
     pub semester2_to: Option<String>,
     /// None = 모든 항목 지원 (P4 호환). Some(빈 목록) 은 거부.
     pub eligible_item_ids: Option<Vec<i64>>,
+    /// 학기 사이 공백 달이 있으면 이 확인 없이는 저장되지 않는다.
+    #[serde(default)]
+    pub confirm_gap: bool,
     #[serde(default)]
     pub note: String,
 }
@@ -916,6 +921,8 @@ pub struct VoucherPolicyPreview {
     pub semester2_from: String,
     pub semester2_to: String,
     pub uncovered_months: Vec<String>,
+    /// 공백 달이 있어 담당자 확인이 필요한가
+    pub gap_needs_confirm: bool,
     pub eligible_item_names: Vec<String>,
     /// 지원 대상에서 빠지는 항목에 이미 등록된(살아 있는) 자유수강권 경정
     pub affected_transfer_count: i64,
@@ -1123,8 +1130,11 @@ pub struct VoucherUsage {
     pub voucher_total: i64,
     pub g3x_total: i64,
     pub general_total: i64,
-    /// 방과후이용권과 자유수강권 중복 대상자 (이용권 실적이 있음)
+    /// 방과후이용권과 자유수강권 중복 대상자 (이용권 대상자로 확인되었거나 이용권 실적이 있음)
     pub dual: bool,
+    /// 방과후이용권 대상 여부 (none · unconfirmed · eligible · ineligible · ended)
+    pub voucher_target_status: String,
+    pub voucher_target_status_label: String,
     pub eligible_item_names: Vec<String>,
     pub semester_label: String,
     pub pending_total: i64,
@@ -1320,4 +1330,245 @@ pub struct VoucherHistory {
     pub target_logs: Vec<VoucherTargetLogRow>,
     pub policy_history: Vec<VoucherPolicy>,
     pub exception_history: Vec<VoucherException>,
+}
+
+// ── P5: 운영 — 백업 · 복원 · 무결성 · 내보내기 · 이용권 대상 ─────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpsRecord {
+    pub at: String,
+    /// backup · restore · integrity · export · cleanup
+    pub kind: String,
+    /// ok · failed · blocked
+    pub status: String,
+    pub summary: String,
+    pub file: Option<String>,
+    #[serde(default)]
+    pub detail: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManifestFile {
+    pub path: String,
+    pub sha256: String,
+    pub size: u64,
+}
+
+/// 백업 패키지 안의 manifest.json
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupManifest {
+    pub format_version: u32,
+    pub created_at: String,
+    pub app_version: String,
+    pub schema_version: i32,
+    /// manual · auto · migration · pre_restore
+    pub kind: String,
+    pub note: String,
+    pub years: Vec<String>,
+    pub db_file: String,
+    pub files: Vec<ManifestFile>,
+    /// 백업에 넣지 못한 원본 파일 (보관 폴더에 없음)
+    pub missing_files: Vec<String>,
+    pub complete: bool,
+    /// 모든 파일의 "path:sha256" 줄을 이어 붙인 것의 SHA-256
+    pub package_sha256: String,
+    pub counts: DbCounts,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DbCounts {
+    pub schema_version: i32,
+    pub years: Vec<String>,
+    pub ledger_entries: i64,
+    pub active_entries: i64,
+    pub adjustments: i64,
+    pub refunds: i64,
+    pub voucher_targets: i64,
+    pub voucher_batches: i64,
+    pub uploads: i64,
+    pub students: i64,
+    pub audit_logs: i64,
+    pub month_closes: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupVerify {
+    pub ok: bool,
+    pub checked_at: String,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupInfo {
+    pub file_name: String,
+    pub path: String,
+    pub size: u64,
+    pub kind: String,
+    pub kind_label: String,
+    pub created_at: String,
+    pub app_version: String,
+    pub schema_version: i32,
+    pub years: Vec<String>,
+    pub complete: bool,
+    pub file_count: i64,
+    pub verified: bool,
+    pub verify_errors: Vec<String>,
+    pub counts: Option<DbCounts>,
+    /// 자동 정리 대상에서 제외되는가 (수동·마이그레이션·복원 전)
+    pub protected: bool,
+    /// 이전 형식(.db 단일 파일) — 목록에만 보이고 복원은 안 됨
+    pub legacy: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupList {
+    pub dir: String,
+    pub backups: Vec<BackupInfo>,
+    pub failed: Vec<BackupInfo>,
+    pub last_backup_at: Option<String>,
+    pub auto_enabled: bool,
+    pub keep: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestorePreview {
+    pub path: String,
+    pub manifest: Option<BackupManifest>,
+    pub verify: BackupVerify,
+    pub current: DbCounts,
+    pub backup: Option<DbCounts>,
+    pub blocked: Vec<String>,
+    pub warnings: Vec<String>,
+    pub can_restore: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreResult {
+    pub ok: bool,
+    pub message: String,
+    pub safety_backup: Option<String>,
+    pub before: DbCounts,
+    pub after: DbCounts,
+    pub before_db_sha256: String,
+    pub after_db_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IntegrityItem {
+    pub code: String,
+    /// ok · check · error
+    pub level: String,
+    pub title: String,
+    pub detail: String,
+    pub student: String,
+    pub program: String,
+    pub month: String,
+    pub entry_ids: Vec<i64>,
+    pub cause: String,
+    pub how_to_check: String,
+    pub fix_hint: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IntegrityCheck {
+    pub code: String,
+    pub title: String,
+    pub level: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IntegrityReport {
+    pub checked_at: String,
+    pub school_year_id: i64,
+    pub ok_count: i64,
+    pub check_count: i64,
+    pub error_count: i64,
+    pub checks: Vec<IntegrityCheck>,
+    pub items: Vec<IntegrityItem>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportResult {
+    pub path: String,
+    pub sheet: String,
+    pub rows: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ReconExportFilter {
+    pub status: Option<String>,
+    pub item_set: Option<String>,
+    pub program_text: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RefundExportFilter {
+    pub status: Option<String>,
+    pub fund_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AfterVoucherLog {
+    pub action: String,
+    pub from_status: String,
+    pub to_status: String,
+    pub detail: String,
+    pub at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AfterVoucherTarget {
+    pub id: i64,
+    pub school_year_id: i64,
+    pub student_id: i64,
+    pub student: String,
+    /// unconfirmed · eligible · ineligible · ended
+    pub status: String,
+    pub status_label: String,
+    pub apply_from: Option<String>,
+    pub apply_to: Option<String>,
+    pub confirmed_on: Option<String>,
+    pub evidence: String,
+    pub note: String,
+    /// 원장의 방과후이용권 실적 (학년도 합)
+    pub actual_total: i64,
+    pub created_at: String,
+    pub updated_at: String,
+    pub logs: Vec<AfterVoucherLog>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AfterVoucherTargetInput {
+    pub school_year_id: i64,
+    pub student_id: i64,
+    pub status: String,
+    pub apply_from: Option<String>,
+    pub apply_to: Option<String>,
+    pub confirmed_on: Option<String>,
+    #[serde(default)]
+    pub evidence: String,
+    #[serde(default)]
+    pub note: String,
+    #[serde(default)]
+    pub reason: String,
 }

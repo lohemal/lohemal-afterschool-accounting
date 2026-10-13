@@ -708,7 +708,7 @@ fn h_source_file_cancel_makes_voucher_transfer_orphan_and_schema_v6_survives() {
     assert_eq!(t.db.read(|c| refund_list(c, t.year_id)).unwrap().len(), 1);
     assert_eq!(t.db.read(|c| batch_list(c, t.year_id)).unwrap().len(), 1);
     assert_eq!(crate::db::migrate::current_version(&rusqlite::Connection::open_in_memory().unwrap()).unwrap(), 0);
-    assert_eq!(crate::db::migrate::latest_version(), 7);
+    assert_eq!(crate::db::migrate::latest_version(), 8);
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -904,7 +904,7 @@ fn p41_c_unlimited_still_proposes_remaining_beneficiary_amounts() {
     let p2 = t.preview(t.stu2);
     assert_eq!((p2.normal_count, p2.normal_total), (1, 40_000));
     assert_eq!(p2.proposals[0].from_fund_name, "초3 초과금");
-    assert!(p2.usages[0].blocked.is_empty() && p2.usages[0].warnings.is_empty());
+    assert!(p2.usages[0].blocked.is_empty() && !p2.usages[0].warnings.iter().any(|w| w.contains("한도")), "한도 오류 없음: {:?}", p2.usages[0].warnings);
     t.apply_normal(&p, "retro", "done").unwrap();
     t.apply_normal(&p2, "retro", "done").unwrap();
     let u2 = t.usage(t.stu2);
@@ -932,10 +932,11 @@ fn p41_d_semester_dates_defaults_validation_and_preservation() {
     i.semester1_to = Some("2026-07-31".into());
     i.semester2_from = Some("2026-09-01".into());
     i.semester2_to = Some("2027-01-31".into());
+    i.confirm_gap = true; // P5: 공백 달은 명시적으로 확인해야 저장된다
     let pv = t.db.read(|c| policy_preview(c, &i)).unwrap();
     assert!(pv.blocked.is_empty(), "{:?}", pv.blocked);
     assert_eq!(pv.uncovered_months, vec!["8월 (2026-08)".to_string(), "2월 (2027-02)".to_string()]);
-    assert!(pv.warnings.iter().any(|x| x.contains("미지원 기간")));
+    assert!(pv.warnings.iter().any(|x| x.contains("0원으로 계산")));
     let p = t.db.write(|tx| policy_save(tx, &i)).unwrap();
     assert!(!p.semester_default);
     assert_eq!(p.uncovered_months.len(), 2);
@@ -1082,8 +1083,8 @@ fn p41_g_v6_policy_survives_v7_migration_with_defaults() {
     c.execute("INSERT INTO voucher_policy (school_year_id, basis, annual_limit, note) VALUES (?1, 'annual', 600000, 'v6 정책')", [y.id]).unwrap();
     let audits_before: i64 = c.query_row("SELECT count(*) FROM audit_log", [], |r| r.get(0)).unwrap();
     migrate::run(&mut c).unwrap();
-    assert_eq!(migrate::current_version(&c).unwrap(), 7);
-    assert_eq!(migrate::latest_version(), 7);
+    assert_eq!(migrate::current_version(&c).unwrap(), 8);
+    assert_eq!(migrate::latest_version(), 8);
     let p = policy_current(&c, y.id).unwrap().unwrap();
     assert_eq!((p.annual_limit, p.note.as_str()), (Some(600_000), "v6 정책"), "기존 정책 보존");
     assert!(p.semester_default && p.all_items_eligible, "기본 학기·모든 항목으로 해석 → 계산 결과 불변");
@@ -1092,4 +1093,82 @@ fn p41_g_v6_policy_survives_v7_migration_with_defaults() {
     assert_eq!(audits_before, audits_after, "감사 이력 보존 (44)");
     let err = c.execute("DELETE FROM voucher_policy_item WHERE policy_id = 1", []).err();
     assert!(err.is_none() || format!("{err:?}").contains("VOUCHER_NO_DELETE"));
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// P5 — 방과후이용권 대상 여부(24~29) · 학기 공백 명시 확인(35~38) · 합산 항목(31·33·34)
+// ══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn p5_d_after_voucher_target_status_is_separate_from_actual_usage() {
+    let t = setup();
+    t.policy("annual", Some(100_000), None, None, false);
+    // 24. 대상 여부 등록 — 근거·확인일 필수
+    let bad = AfterVoucherTargetInput { school_year_id: t.year_id, student_id: t.stu, status: "eligible".into(), apply_from: Some("2026-03-01".into()), apply_to: None, confirmed_on: Some("2026-03-02".into()), evidence: String::new(), note: String::new(), reason: String::new() };
+    assert_eq!(t.db.write(|tx| av_target_save(tx, &bad)).unwrap_err().code, "INVALID");
+    let ok = AfterVoucherTargetInput { evidence: "교육청 대상자 명단".into(), ..bad.clone() };
+    let a = t.db.write(|tx| av_target_save(tx, &ok)).unwrap();
+    assert_eq!((a.status_label.as_str(), a.actual_total, a.logs.len()), ("대상자", 0, 1));
+    // 26·시나리오 7: 실적 없는 대상자 → 중복 대상자 규칙 적용, 이용권 사용액 0 유지
+    t.collect(2, t.g3x, 40_000);
+    t.collect(2, t.ben, 20_000);
+    t.confirm(t.stu, "2026-03-01");
+    let u = t.usage(t.stu);
+    assert!(u.dual && u.voucher_total == 0);
+    assert_eq!(u.voucher_target_status, "eligible");
+    let p = t.preview(t.stu);
+    assert_eq!((p.normal_total, p.check_total), (40_000, 20_000), "29. 초3 초과금 우선, 일반 수익자는 재원 확인");
+    assert!(u.warnings.iter().all(|w| !w.contains("대상 여부가")));
+    // 25. 상태 변경 — 사유 필수, 이력 유지
+    let chg = AfterVoucherTargetInput { status: "ineligible".into(), ..ok.clone() };
+    assert_eq!(t.db.write(|tx| av_target_save(tx, &chg)).unwrap_err().code, "INVALID");
+    let chg = AfterVoucherTargetInput { status: "ineligible".into(), reason: "명단 정정".into(), ..ok.clone() };
+    let a = t.db.write(|tx| av_target_save(tx, &chg)).unwrap();
+    assert_eq!(a.logs.len(), 2);
+    assert_eq!(a.logs[1].to_status, "ineligible");
+    assert!(!t.usage(t.stu).dual, "비대상자이고 실적도 없으면 중복 대상자가 아니다");
+    // 27·28. 실적은 있으나 대상 미확인 → 목록에 '기록 없음' 으로 보이고, 중복 규칙은 적용되나 확인 안내
+    t.collect_for(t.stu2, 2, t.coding, t.voucher, 60_000);
+    t.collect_for(t.stu2, 2, t.coding, t.g3x, 40_000);
+    t.confirm(t.stu2, "2026-03-01");
+    let list = t.db.read(|c| av_target_list(c, t.year_id)).unwrap();
+    let s2 = list.iter().find(|x| x.student_id == t.stu2).expect("실적만 있는 학생도 목록에");
+    assert_eq!((s2.status.as_str(), s2.actual_total, s2.id), ("none", 60_000, 0));
+    let u2 = t.usage(t.stu2);
+    assert!(u2.dual);
+    assert_eq!(u2.voucher_target_status, "none");
+    assert!(u2.warnings.iter().any(|w| w.contains("대상 여부")), "{:?}", u2.warnings);
+    // 실적이 있어도 대상자 기록은 자동 생성되지 않는다
+    let n: i64 = t.db.read(|c| Ok(c.query_row("SELECT count(*) FROM after_voucher_target", [], |r| r.get(0))?)).unwrap();
+    assert_eq!(n, 1);
+}
+
+#[test]
+fn p5_f_semester_gap_requires_explicit_confirmation() {
+    let t = setup();
+    let mut i = t.policy_input("semester", None, Some(100_000), Some(100_000), true);
+    i.semester1_from = Some("2026-03-01".into());
+    i.semester1_to = Some("2026-07-31".into());
+    i.semester2_from = Some("2026-09-01".into());
+    i.semester2_to = Some("2027-02-28".into());
+    // 35·36. 공백 감지 · 확인 전 저장 차단
+    let pv = t.db.read(|c| policy_preview(c, &i)).unwrap();
+    assert!(pv.gap_needs_confirm);
+    assert_eq!(pv.uncovered_months, vec!["8월 (2026-08)".to_string()]);
+    assert!(pv.blocked.iter().any(|b| b.contains("8월") && b.contains("0원으로 계산") && b.contains("유지하시겠습니까")));
+    assert_eq!(t.db.write(|tx| policy_save(tx, &i)).unwrap_err().code, "INVALID");
+    assert!(t.db.read(|c| policy_history(c, t.year_id)).unwrap().is_empty());
+    // 37. 확인 후 저장 · 38. 이력 보존
+    i.confirm_gap = true;
+    let p = t.db.write(|tx| policy_save(tx, &i)).unwrap();
+    assert!(p.gap_confirmed);
+    assert_eq!(p.uncovered_months.len(), 1);
+    let j = t.policy("annual", Some(600_000), None, None, false);
+    assert!(!j.gap_confirmed);
+    let h = t.db.read(|c| policy_history(c, t.year_id)).unwrap();
+    assert_eq!(h.len(), 2);
+    assert!(h[1].gap_confirmed && h[1].superseded_at.is_some());
+    // 공백 없는 학기 설정은 확인 없이 저장된다
+    let k = t.policy_input("semester", None, Some(1), Some(1), false);
+    assert!(!t.db.read(|c| policy_preview(c, &k)).unwrap().gap_needs_confirm);
 }

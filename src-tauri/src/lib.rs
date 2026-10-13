@@ -16,6 +16,7 @@ pub mod error;
 pub mod excel;
 pub mod logging;
 pub mod model;
+pub mod ops;
 pub mod repo;
 
 use tauri::Manager;
@@ -52,6 +53,12 @@ pub fn run() {
             // 반영 도중 앱이 꺼져 DB 에 없는 보관 파일이 남았으면 치운다.
             if let Err(e) = db.read(|c| repo::upload::cleanup_orphans(c, &dir)) {
                 log::warn!("보관 파일 정리 실패(계속 진행): {}", e.message);
+            }
+            // 정기 자동 백업 — 하루 한 번, 프로그램 시작 때. 실패해도 앱은 뜬다 (작업 이력에 남는다).
+            match db.read(|c| ops::backup::auto_daily(c, &dir)) {
+                Ok(Some(b)) => log::info!("자동 백업: {}", b.file_name),
+                Ok(None) => {}
+                Err(e) => log::warn!("자동 백업 실패(계속 진행): {}", e.message),
             }
             app.manage(db);
             Ok(())
@@ -124,6 +131,21 @@ pub fn run() {
             commands::voucher::voucher_refund_register,
             commands::voucher::voucher_refund_complete,
             commands::voucher::voucher_history,
+            commands::voucher::after_voucher_target_list,
+            commands::voucher::after_voucher_target_save,
+            commands::ops::backup_list,
+            commands::ops::backup_create,
+            commands::ops::backup_settings_set,
+            commands::ops::backup_verify,
+            commands::ops::restore_inspect,
+            commands::ops::restore_apply,
+            commands::ops::integrity_run,
+            commands::ops::ops_history,
+            commands::ops::export_recon,
+            commands::ops::export_voucher_usage,
+            commands::ops::export_voucher_refunds,
+            commands::ops::export_integrity,
+            commands::ops::export_default_name,
         ])
         .run(tauri::generate_context!())
         .expect("앱을 시작하지 못했습니다");

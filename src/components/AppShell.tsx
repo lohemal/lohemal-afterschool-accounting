@@ -34,7 +34,10 @@ const GROUPS: { label: string; items: Item[] }[] = [
   },
   {
     label: '관리',
-    items: [{ to: '/settings', label: '설정' }],
+    items: [
+      { to: '/data', label: '데이터 관리' },
+      { to: '/settings', label: '설정' },
+    ],
   },
 ]
 

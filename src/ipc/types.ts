@@ -694,6 +694,7 @@ export interface VoucherPolicy {
   eligibleItemIds: number[]
   eligibleItemNames: string[]
   allItemsEligible: boolean
+  gapConfirmed: boolean
   note: string
   createdAt: string
   supersededAt: string | null
@@ -712,6 +713,8 @@ export interface VoucherPolicyInput {
   semester2To?: string | null
   /** null = 모든 항목 지원 */
   eligibleItemIds?: number[] | null
+  /** 학기 사이 공백 달을 담당자가 확인했음 (없으면 저장 차단) */
+  confirmGap?: boolean
   note?: string
 }
 
@@ -721,6 +724,7 @@ export interface VoucherPolicyPreview {
   semester2From: string
   semester2To: string
   uncoveredMonths: string[]
+  gapNeedsConfirm: boolean
   eligibleItemNames: string[]
   affectedTransferCount: number
   affectedTransferTotal: number
@@ -829,7 +833,7 @@ export interface VoucherFundPart {
   amount: number
 }
 
-export type VoucherUsageState = 'ok' | 'retro' | 'over' | 'decide' | 'pending' | 'outside' | 'excluded'
+export type VoucherUsageState = 'ok' | 'retro' | 'over' | 'decide' | 'pending' | 'outside' | 'excluded' | 'dup_check'
 
 export interface VoucherUsageRow {
   fiscalMonthId: number
@@ -884,6 +888,8 @@ export interface VoucherUsage {
   g3xTotal: number
   generalTotal: number
   dual: boolean
+  voucherTargetStatus: string
+  voucherTargetStatusLabel: string
   eligibleItemNames: string[]
   semesterLabel: string
   pendingTotal: number
@@ -1048,4 +1054,190 @@ export interface VoucherHistory {
   targetLogs: VoucherTargetLogRow[]
   policyHistory: VoucherPolicy[]
   exceptionHistory: VoucherException[]
+}
+
+/* ── P5: 운영 — 백업 · 복원 · 무결성 · 내보내기 · 이용권 대상 ── */
+
+export interface OpsRecord {
+  at: string
+  kind: string
+  status: string
+  summary: string
+  file: string | null
+  detail: unknown
+}
+
+export interface DbCounts {
+  schemaVersion: number
+  years: string[]
+  ledgerEntries: number
+  activeEntries: number
+  adjustments: number
+  refunds: number
+  voucherTargets: number
+  voucherBatches: number
+  uploads: number
+  students: number
+  auditLogs: number
+  monthCloses: number
+}
+
+export interface BackupManifest {
+  formatVersion: number
+  createdAt: string
+  appVersion: string
+  schemaVersion: number
+  kind: string
+  note: string
+  years: string[]
+  dbFile: string
+  files: { path: string; sha256: string; size: number }[]
+  missingFiles: string[]
+  complete: boolean
+  packageSha256: string
+  counts: DbCounts
+}
+
+export interface BackupVerify {
+  ok: boolean
+  checkedAt: string
+  errors: string[]
+  warnings: string[]
+}
+
+export interface BackupInfo {
+  fileName: string
+  path: string
+  size: number
+  kind: string
+  kindLabel: string
+  createdAt: string
+  appVersion: string
+  schemaVersion: number
+  years: string[]
+  complete: boolean
+  fileCount: number
+  verified: boolean
+  verifyErrors: string[]
+  counts: DbCounts | null
+  protected: boolean
+  legacy: boolean
+}
+
+export interface BackupList {
+  dir: string
+  backups: BackupInfo[]
+  failed: BackupInfo[]
+  lastBackupAt: string | null
+  autoEnabled: boolean
+  keep: number
+}
+
+export interface RestorePreview {
+  path: string
+  manifest: BackupManifest | null
+  verify: BackupVerify
+  current: DbCounts
+  backup: DbCounts | null
+  blocked: string[]
+  warnings: string[]
+  canRestore: boolean
+}
+
+export interface RestoreResult {
+  ok: boolean
+  message: string
+  safetyBackup: string | null
+  before: DbCounts
+  after: DbCounts
+  beforeDbSha256: string
+  afterDbSha256: string
+}
+
+export interface IntegrityItem {
+  code: string
+  level: 'ok' | 'check' | 'error'
+  title: string
+  detail: string
+  student: string
+  program: string
+  month: string
+  entryIds: number[]
+  cause: string
+  howToCheck: string
+  fixHint: string
+}
+
+export interface IntegrityCheck {
+  code: string
+  title: string
+  level: 'ok' | 'check' | 'error'
+  count: number
+}
+
+export interface IntegrityReport {
+  checkedAt: string
+  schoolYearId: number
+  okCount: number
+  checkCount: number
+  errorCount: number
+  checks: IntegrityCheck[]
+  items: IntegrityItem[]
+}
+
+export interface ExportResult {
+  path: string
+  sheet: string
+  rows: number
+}
+
+export interface ReconExportFilter {
+  status?: string | null
+  itemSet?: string | null
+  programText?: string | null
+}
+
+export interface RefundExportFilter {
+  status?: string | null
+  fundName?: string | null
+}
+
+export type AfterVoucherStatus = 'unconfirmed' | 'eligible' | 'ineligible' | 'ended' | 'none'
+
+export interface AfterVoucherLog {
+  action: string
+  fromStatus: string
+  toStatus: string
+  detail: string
+  at: string
+}
+
+export interface AfterVoucherTarget {
+  id: number
+  schoolYearId: number
+  studentId: number
+  student: string
+  status: AfterVoucherStatus
+  statusLabel: string
+  applyFrom: string | null
+  applyTo: string | null
+  confirmedOn: string | null
+  evidence: string
+  note: string
+  actualTotal: number
+  createdAt: string
+  updatedAt: string
+  logs: AfterVoucherLog[]
+}
+
+export interface AfterVoucherTargetInput {
+  schoolYearId: number
+  studentId: number
+  status: AfterVoucherStatus
+  applyFrom?: string | null
+  applyTo?: string | null
+  confirmedOn?: string | null
+  evidence?: string
+  note?: string
+  reason?: string
 }
