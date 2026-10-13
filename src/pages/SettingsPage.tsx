@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 
+import { FundAliasAdmin, ProgramAdmin } from '@/components/ProgramAdmin'
 import { Button, Card, Notice, Page, useToast } from '@/components/ui'
 import { api, errorMessage } from '@/ipc/api'
 import { shortDateTime } from '@/lib/format'
@@ -9,7 +10,7 @@ import { useApp } from '@/lib/useApp'
 import type { AmountItem, CatalogInput, FundType } from '@/ipc/types'
 
 export function SettingsPage() {
-  const { boot, refresh } = useApp()
+  const { boot, refresh, year } = useApp()
   const toast = useToast()
   const cat = useQuery({ queryKey: ['catalog'], queryFn: api.catalogList })
 
@@ -113,6 +114,9 @@ export function SettingsPage() {
         </Card>
       </div>
 
+      {year && <ProgramAdmin yearId={year.id} />}
+      <FundAliasAdmin />
+
       <Card title="자료 위치">
         <div className="row">
           <span className="label">DB 파일</span>
@@ -130,7 +134,7 @@ export function SettingsPage() {
           </Button>
         </div>
         <p className="muted" style={{ margin: '10px 0 0' }}>
-          모든 자료는 이 컴퓨터의 SQLite 파일에만 저장되며 외부로 전송되지 않습니다. 백업·복원은 P1 이후에 붙습니다.
+          모든 자료는 이 컴퓨터의 SQLite 파일에만 저장되며 외부로 전송되지 않습니다. 올린 엑셀 원본은 자료 폴더의 uploads/ 에 보관됩니다. DB 백업·복원은 다음 단계에 붙습니다.
         </p>
       </Card>
     </Page>
@@ -183,6 +187,7 @@ function CatalogEditor({
                   {parents && <td className="muted">{parents.find((p) => p.id === parentId)?.name ?? '—'}</td>}
                   <td className="center">
                     <span className={r.isBuiltin ? 'badge badge--navy' : 'badge badge--muted'}>{r.isBuiltin ? '기본' : '사용자'}</span>
+                    {'mergedIntoId' in r && r.mergedIntoId !== null && <span className="badge badge--muted" style={{ marginLeft: 4 }}>통합됨</span>}
                   </td>
                   <td>
                     <div className="row" style={{ gap: 4 }}>

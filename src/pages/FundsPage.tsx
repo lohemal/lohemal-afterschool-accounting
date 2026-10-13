@@ -10,8 +10,7 @@ export function FundsPage() {
   return (
     <Page title="재원별 관리" sub="재원(수익자·자유수강권·초3 지원금 등)별 징수·지출 집계와 재원 간 이동(과목경정)을 다룹니다.">
       <Soon phase="P2 · P4">
-        재원별 월 집계, 자유수강권 소급 환불, 재원 간 이동 등록은 아직 구현되지 않았습니다. 재원 이동은 두 줄의 합이 0 인 쌍으로만
-        저장되도록 자료 모델에 못 박혀 있습니다.
+        재원별 월 집계, 자유수강권 소급 환불, 재원 간 이동 등록은 아직 구현되지 않았습니다. 엑셀 표기와 재원의 연결(별칭)은 설정에서 관리합니다. '초3 지원금'은 방과후이용권으로 통합되어 집계됩니다.
       </Soon>
 
       <Card title="재원 유형" right={<Link to="/settings">이름 바꾸기·추가는 설정에서</Link>}>
@@ -24,6 +23,7 @@ export function FundsPage() {
                   <th>재원</th>
                   <th>코드</th>
                   <th>상위 재원</th>
+                  <th>통합 대상</th>
                   <th className="center">구분</th>
                   <th className="center">사용</th>
                 </tr>
@@ -34,6 +34,7 @@ export function FundsPage() {
                     <td>{f.name}</td>
                     <td className="mono muted">{f.code}</td>
                     <td className="muted">{cat.data.fundTypes.find((p) => p.id === f.parentId)?.name ?? '—'}</td>
+                    <td className="muted">{cat.data.fundTypes.find((p) => p.id === f.mergedIntoId)?.name ?? '—'}</td>
                     <td className="center">
                       <span className={f.isBuiltin ? 'badge badge--navy' : 'badge badge--muted'}>{f.isBuiltin ? '기본' : '사용자'}</span>
                     </td>

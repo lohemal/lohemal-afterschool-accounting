@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "기본 권한 — 창 기본 기능만 허용합니다. 파일 선택 창은 P1(업로드)에서 추가합니다.",
+  "description": "기본 권한 — 창 기본 기능과 엑셀 파일 선택 창(열기)만 허용합니다.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "dialog:allow-open"]
 }

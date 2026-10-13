@@ -8,7 +8,10 @@
 //!   1. `migrations/00N_설명.sql` 파일 생성
 //!   2. 아래 MIGRATIONS 배열에 한 줄 추가
 //! 기존 파일은 절대 수정하지 않는다 (이미 적용된 사용자가 있으므로).
-//! 단, **첫 릴리스 전**에는 001 을 직접 고치되 연습용 DB 파일을 지우고 다시 만든다.
+//!
+//! 표를 갈아 끼우는 마이그레이션(`fk_off`)은 외래키를 끄고 돌린다. 외래키를 켠 채
+//! `DROP TABLE` 하면 자식 행이 함께 지워지기 때문이다. 대신 **커밋 전에**
+//! `foreign_key_check` 로 확인하므로 어긋나면 아무것도 적용되지 않는다.
 
 use rusqlite::Connection;
 
@@ -18,13 +21,24 @@ struct Migration {
     version: i32,
     name: &'static str,
     sql: &'static str,
+    fk_off: bool,
 }
 
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "001_init",
-    sql: include_str!("../../migrations/001_init.sql"),
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "001_init",
+        sql: include_str!("../../migrations/001_init.sql"),
+        fk_off: false,
+    },
+    // ledger_entry · program_alias 재생성 — 외래키를 끄고 돌린다.
+    Migration {
+        version: 2,
+        name: "002_upload_versions",
+        sql: include_str!("../../migrations/002_upload_versions.sql"),
+        fk_off: true,
+    },
+];
 
 pub fn latest_version() -> i32 {
     MIGRATIONS.iter().map(|m| m.version).max().unwrap_or(0)
@@ -54,8 +68,30 @@ pub fn run(conn: &mut Connection) -> AppResult<()> {
             Err(e) => log::warn!("마이그레이션 전 백업 실패(계속 진행): {e}"),
         }
     }
+    apply(conn, from)
+}
+
+/// 테스트용 — 특정 버전까지만 적용한다 (구버전 DB 를 흉내 낼 때).
+#[cfg(test)]
+pub fn run_up_to(conn: &mut Connection, to: i32) -> AppResult<()> {
+    let from = current_version(conn)?;
+    for m in MIGRATIONS.iter().filter(|m| m.version > from && m.version <= to) {
+        if m.fk_off {
+            apply_one_without_fk(conn, m)?;
+        } else {
+            apply_one(conn, m)?;
+        }
+    }
+    Ok(())
+}
+
+fn apply(conn: &mut Connection, from: i32) -> AppResult<()> {
     for m in MIGRATIONS.iter().filter(|m| m.version > from) {
-        apply_one(conn, m)?;
+        if m.fk_off {
+            apply_one_without_fk(conn, m)?;
+        } else {
+            apply_one(conn, m)?;
+        }
         log::info!("마이그레이션 적용: {}", m.name);
     }
     Ok(())
@@ -82,6 +118,16 @@ fn apply_one(conn: &mut Connection, m: &Migration) -> AppResult<()> {
     }
     tx.pragma_update(None, "user_version", m.version)?;
     tx.commit()?;
+    Ok(())
+}
+
+/// PRAGMA foreign_keys 는 트랜잭션 안에서 듣지 않으므로 바깥에서 끄고, 끝나면 반드시 켠다.
+fn apply_one_without_fk(conn: &mut Connection, m: &Migration) -> AppResult<()> {
+    conn.pragma_update(None, "foreign_keys", "OFF")?;
+    let result = apply_one(conn, m);
+    let restored = conn.pragma_update(None, "foreign_keys", "ON");
+    result?;
+    restored?;
     Ok(())
 }
 
@@ -113,6 +159,7 @@ fn backup_before_migrate(conn: &Connection, from: i32) -> AppResult<Option<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::params;
 
     fn fresh() -> Connection {
         let mut c = Connection::open_in_memory().unwrap();
@@ -125,9 +172,10 @@ mod tests {
     fn applies_to_latest_and_is_idempotent() {
         let mut c = fresh();
         assert_eq!(current_version(&c).unwrap(), latest_version());
-        // 두 번 돌려도 아무 일도 하지 않는다.
         run(&mut c).unwrap();
         assert_eq!(current_version(&c).unwrap(), latest_version());
+        let fk: i64 = c.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap();
+        assert_eq!(fk, 1, "fk_off 마이그레이션 뒤에도 외래키는 다시 켜진다");
     }
 
     #[test]
@@ -141,7 +189,6 @@ mod tests {
             .query_row("SELECT count(*) FROM amount_item WHERE is_builtin = 1", [], |r| r.get(0))
             .unwrap();
         assert_eq!(items, 6);
-        // 초3 수익자 부담금은 수익자의 하위 구분이다.
         let parent: String = c
             .query_row(
                 "SELECT p.code FROM fund_type f JOIN fund_type p ON p.id = f.parent_id WHERE f.code = 'g3_excess'",
@@ -150,6 +197,42 @@ mod tests {
             )
             .unwrap();
         assert_eq!(parent, "beneficiary");
+    }
+
+    #[test]
+    fn v1_data_survives_the_v2_rebuild() {
+        // v1 스키마에 학년도·프로그램·거래를 넣고 v2 로 올린다. id 와 금액이 그대로여야 한다.
+        let mut c = Connection::open_in_memory().unwrap();
+        c.pragma_update(None, "foreign_keys", "ON").unwrap();
+        run_up_to(&mut c, 1).unwrap();
+        assert_eq!(current_version(&c).unwrap(), 1);
+        c.execute("INSERT INTO school_year (year, name, start_ym, end_ym, is_current) VALUES (2026, '2026학년도', '2026-03', '2027-02', 1)", []).unwrap();
+        c.execute("INSERT INTO fiscal_month (school_year_id, ym, seq) VALUES (1, '2026-03', 1)", []).unwrap();
+        c.execute("INSERT INTO program (school_year_id, name) VALUES (1, '코딩')", []).unwrap();
+        c.execute("INSERT INTO program_alias (school_year_id, program_id, alias) VALUES (1, 1, '코딩A')", []).unwrap();
+        let g3: i64 = c.query_row("SELECT id FROM fund_type WHERE code = 'g3_support'", [], |r| r.get(0)).unwrap();
+        c.execute(
+            "INSERT INTO ledger_entry (school_year_id, fiscal_month_id, program_id, fund_type_id, amount_item_id, flow, entry_kind, amount)
+             VALUES (1, 1, 1, ?1, 1, 'collection', 'initial_collect', 70000)",
+            params![g3],
+        )
+        .unwrap();
+        run(&mut c).unwrap();
+        assert_eq!(current_version(&c).unwrap(), latest_version());
+        let (id, amount, fund, prog): (i64, i64, i64, i64) = c
+            .query_row("SELECT id, amount, fund_type_id, program_id FROM ledger_entry", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap();
+        assert_eq!((id, amount, fund, prog), (1, 70000, g3, 1), "기존 거래의 id·금액·재원 id 유지");
+        let merged: Option<i64> = c.query_row("SELECT merged_into_id FROM fund_type WHERE id = ?1", [g3], |r| r.get(0)).unwrap();
+        let av: i64 = c.query_row("SELECT id FROM fund_type WHERE code = 'after_voucher'", [], |r| r.get(0)).unwrap();
+        assert_eq!(merged, Some(av), "초3 지원금은 방과후이용권으로 접힌다");
+        let alias: String = c.query_row("SELECT alias FROM program_alias WHERE program_id = 1", [], |r| r.get(0)).unwrap();
+        assert_eq!(alias, "코딩A");
+        // 재생성된 표에서도 원장 불변성이 유지된다.
+        let err = c.execute("UPDATE ledger_entry SET amount = 1 WHERE id = 1", []).unwrap_err();
+        assert!(err.to_string().contains("LEDGER_IMMUTABLE"));
+        let err = c.execute("DELETE FROM ledger_entry WHERE id = 1", []).unwrap_err();
+        assert!(err.to_string().contains("LEDGER_NO_DELETE"));
     }
 
     #[test]
@@ -173,22 +256,12 @@ mod tests {
             .map(|r| r.unwrap())
             .collect();
         for t in [
-            "school_year",
-            "fiscal_month",
-            "fund_type",
-            "amount_item",
-            "program",
-            "program_alias",
-            "student",
-            "upload_file",
-            "source_row",
-            "ledger_entry",
-            "ledger_correction",
-            "month_close",
-            "audit_log",
-            "app_setting",
+            "school_year", "fiscal_month", "fund_type", "fund_type_alias", "amount_item", "program", "program_alias",
+            "program_group", "program_group_member", "student", "upload_file", "upload_row", "upload_apply",
+            "source_row", "ledger_entry", "ledger_correction", "month_close", "audit_log", "app_setting",
         ] {
             assert!(names.iter().any(|n| n == t), "표 {t} 가 없다: {names:?}");
         }
+        assert!(!names.iter().any(|n| n.ends_with("_new")), "임시 표가 남아 있다");
     }
 }

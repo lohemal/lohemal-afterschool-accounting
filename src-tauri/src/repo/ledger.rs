@@ -24,7 +24,7 @@ pub const KINDS: &[&str] = &[
 
 const COLS: &str = "id, school_year_id, fiscal_month_id, program_id, student_id, fund_type_id, amount_item_id,
                     flow, entry_kind, amount, stage, state, processed_on, counterparty, transfer_group_id,
-                    upload_file_id, source_row_id, supersedes_id, reason, created_at";
+                    upload_file_id, source_row_id, supersedes_id, reason, created_at, program_group_id";
 
 fn map(r: &Row) -> rusqlite::Result<LedgerEntry> {
     Ok(LedgerEntry {
@@ -48,6 +48,7 @@ fn map(r: &Row) -> rusqlite::Result<LedgerEntry> {
         supersedes_id: r.get(17)?,
         reason: r.get(18)?,
         created_at: r.get(19)?,
+        program_group_id: r.get(20)?,
     })
 }
 
@@ -77,6 +78,9 @@ fn validate(conn: &Connection, e: &NewEntry) -> AppResult<()> {
         if s != "planned" && s != "actual" {
             return Err(AppError::invalid("단계는 planned 또는 actual 이어야 합니다."));
         }
+    }
+    if e.program_id.is_some() && e.program_group_id.is_some() {
+        return Err(AppError::invalid("프로그램과 프로그램 그룹을 동시에 둘 수 없습니다."));
     }
     if let Some(d) = &e.processed_on {
         if chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").is_err() {
@@ -109,8 +113,8 @@ fn insert_raw(
         "INSERT INTO ledger_entry
            (school_year_id, fiscal_month_id, program_id, student_id, fund_type_id, amount_item_id,
             flow, entry_kind, amount, stage, processed_on, counterparty, transfer_group_id,
-            upload_file_id, source_row_id, supersedes_id, reason)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+            upload_file_id, source_row_id, supersedes_id, reason, program_group_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
         params![
             e.school_year_id,
             e.fiscal_month_id,
@@ -129,6 +133,7 @@ fn insert_raw(
             e.source_row_id,
             supersedes_id,
             e.reason.clone().unwrap_or_default(),
+            e.program_group_id,
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -358,15 +363,18 @@ pub fn chain(conn: &Connection, id: i64) -> AppResult<Vec<LedgerEntry>> {
 /// 월별 합계를 원본 거래에서 다시 계산한다. 살아 있는(active) 거래만 센다.
 pub fn month_summary(conn: &Connection, fiscal_month_id: i64) -> AppResult<MonthSummary> {
     let mut st = conn.prepare(
-        "SELECT e.program_id, p.name, e.fund_type_id, f.name, e.amount_item_id, i.name,
+        "SELECT e.program_id, coalesce(p.name, g.name || ' (그룹)', '미배분'),
+                ef.id, coalesce(ef.name, '미확정'), e.amount_item_id, i.name,
                 e.flow, e.stage, count(*), sum(e.amount)
            FROM ledger_entry e
-           JOIN program p ON p.id = e.program_id
-           JOIN fund_type f ON f.id = e.fund_type_id
+           LEFT JOIN program p ON p.id = e.program_id
+           LEFT JOIN program_group g ON g.id = e.program_group_id
+           LEFT JOIN fund_type f0 ON f0.id = e.fund_type_id
+           LEFT JOIN fund_type ef ON ef.id = coalesce(f0.merged_into_id, f0.id)
            JOIN amount_item i ON i.id = e.amount_item_id
           WHERE e.fiscal_month_id = ?1 AND e.state = 'active'
-          GROUP BY e.program_id, e.fund_type_id, e.amount_item_id, e.flow, e.stage
-          ORDER BY p.name, f.sort_order, i.sort_order, e.flow, e.stage",
+          GROUP BY e.program_id, e.program_group_id, ef.id, e.amount_item_id, e.flow, e.stage
+          ORDER BY (p.name IS NULL AND g.name IS NULL), coalesce(p.name, g.name), ef.sort_order, i.sort_order, e.flow, e.stage",
     )?;
     let rows = st.query_map([fiscal_month_id], |r| {
         Ok(MonthSummaryRow {
@@ -551,16 +559,16 @@ mod tests {
     fn fund_transfer_must_balance_and_voids_as_a_pair() {
         let f = fixture();
         let mut from = f.entry(3, "transfer", "fund_transfer", -70_000);
-        from.fund_type_id = f.fund_beneficiary;
+        from.fund_type_id = Some(f.fund_beneficiary);
         let mut to = f.entry(3, "transfer", "fund_transfer", 70_000);
-        to.fund_type_id = f.fund_free_voucher;
+        to.fund_type_id = Some(f.fund_free_voucher);
 
         let mut unbalanced = to.clone();
         unbalanced.amount = 60_000;
         assert_eq!(f.db.write(|tx| insert_transfer(tx, &from, &unbalanced)).unwrap_err().code, "INVALID");
 
         let mut same_fund = to.clone();
-        same_fund.fund_type_id = f.fund_beneficiary;
+        same_fund.fund_type_id = Some(f.fund_beneficiary);
         assert_eq!(f.db.write(|tx| insert_transfer(tx, &from, &same_fund)).unwrap_err().code, "INVALID");
 
         // 단건으로는 넣을 수 없다.

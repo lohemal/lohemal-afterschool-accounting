@@ -143,6 +143,60 @@ pub fn months(conn: &Connection, school_year_id: i64) -> AppResult<Vec<FiscalMon
     Ok(out?)
 }
 
+pub fn month_is_closed(conn: &Connection, fiscal_month_id: i64) -> AppResult<bool> {
+    let status: Option<String> = conn
+        .query_row("SELECT status FROM fiscal_month WHERE id = ?1", [fiscal_month_id], |r| r.get(0))
+        .optional()?;
+    match status {
+        Some(s) => Ok(s == "closed"),
+        None => Err(AppError::not_found("회계월을 찾지 못했습니다.")),
+    }
+}
+
+pub fn month_label_of(conn: &Connection, fiscal_month_id: i64) -> AppResult<String> {
+    let ym: Option<String> = conn
+        .query_row("SELECT ym FROM fiscal_month WHERE id = ?1", [fiscal_month_id], |r| r.get(0))
+        .optional()?;
+    Ok(ym.map(|y| format!("{} ({y})", months::label(&y))).unwrap_or_default())
+}
+
+/// 월 확정 — 그 시점의 합계를 스냅샷으로 남긴다. 확정된 달의 업로드 자료는 재개 전까지 바꿀 수 없다.
+pub fn month_close(conn: &Connection, fiscal_month_id: i64, note: &str) -> AppResult<()> {
+    if month_is_closed(conn, fiscal_month_id)? {
+        return Err(AppError::invalid("이미 확정된 달입니다."));
+    }
+    let s = crate::repo::ledger::month_summary(conn, fiscal_month_id)?;
+    let totals = serde_json::json!({
+        "entryCount": s.rows.iter().map(|r| r.entry_count).sum::<i64>(),
+        "collectionTotal": s.collection_total,
+        "expenditureTotal": s.expenditure_total,
+    });
+    conn.execute("UPDATE fiscal_month SET status = 'closed' WHERE id = ?1", [fiscal_month_id])?;
+    conn.execute(
+        "INSERT INTO month_close (fiscal_month_id, action, totals_json, note) VALUES (?1, 'close', ?2, ?3)",
+        params![fiscal_month_id, totals.to_string(), note.trim()],
+    )?;
+    audit::write(conn, "month.close", "fiscal_month", Some(fiscal_month_id), &format!("{} 확정", month_label_of(conn, fiscal_month_id)?), serde_json::json!({}))?;
+    Ok(())
+}
+
+pub fn month_reopen(conn: &Connection, fiscal_month_id: i64, note: &str) -> AppResult<()> {
+    if !month_is_closed(conn, fiscal_month_id)? {
+        return Err(AppError::invalid("확정되지 않은 달입니다."));
+    }
+    let n = note.trim();
+    if n.is_empty() {
+        return Err(AppError::invalid("재개 사유를 입력해 주세요."));
+    }
+    conn.execute("UPDATE fiscal_month SET status = 'open' WHERE id = ?1", [fiscal_month_id])?;
+    conn.execute(
+        "INSERT INTO month_close (fiscal_month_id, action, note) VALUES (?1, 'reopen', ?2)",
+        params![fiscal_month_id, n],
+    )?;
+    audit::write(conn, "month.reopen", "fiscal_month", Some(fiscal_month_id), &format!("{} 재개: {n}", month_label_of(conn, fiscal_month_id)?), serde_json::json!({}))?;
+    Ok(())
+}
+
 pub fn month_get(conn: &Connection, school_year_id: i64, id: i64) -> AppResult<FiscalMonth> {
     months(conn, school_year_id)?
         .into_iter()

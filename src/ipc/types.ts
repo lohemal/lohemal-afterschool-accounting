@@ -36,9 +36,18 @@ export interface FundType {
   code: string
   name: string
   parentId: number | null
+  mergedIntoId: number | null
   sortOrder: number
   isBuiltin: boolean
   isActive: boolean
+}
+
+export interface FundAlias {
+  id: number
+  fundTypeId: number
+  fundTypeName: string
+  alias: string
+  isBuiltin: boolean
 }
 
 export interface AmountItem {
@@ -69,9 +78,52 @@ export interface Program {
   note: string
   isActive: boolean
   aliases: string[]
+  entryCount: number
+}
+
+export interface ProgramGroup {
+  id: number
+  schoolYearId: number
+  name: string
+  note: string
+  memberIds: number[]
+  memberNames: string[]
+}
+
+export interface ProgramMapInput {
+  schoolYearId: number
+  alias: string
+  target: 'program' | 'group' | 'new_program' | 'new_group'
+  programId?: number | null
+  groupId?: number | null
+  newName?: string | null
+  memberIds?: number[] | null
 }
 
 export type UploadStatus = 'registered' | 'previewed' | 'applied' | 'cancelled' | 'replaced'
+export type DataKind = 'initial_collect' | 'extra_refund' | 'instructor_pay' | 'vendor_pay' | 'roster_link' | 'snapshot'
+
+export interface SummaryLine {
+  name: string
+  count: number
+  total: number
+}
+
+export interface UploadSummary {
+  sourceRowCount: number
+  dataRowCount: number
+  excludedRowCount: number
+  rowCount: number
+  okCount: number
+  checkCount: number
+  errorCount: number
+  includedCount: number
+  collectionTotal: number
+  expenditureTotal: number
+  byItem: SummaryLine[]
+  byFund: SummaryLine[]
+  byProgram: SummaryLine[]
+}
 
 export interface UploadFile {
   id: number
@@ -80,24 +132,189 @@ export interface UploadFile {
   sha256: string
   byteSize: number
   formatCode: string
+  formatLabel: string
+  dataKind: DataKind
+  dataKindLabel: string
+  fiscalMonthId: number | null
+  fiscalMonthLabel: string
+  lineageId: number | null
   versionNo: number
   status: UploadStatus
+  statusLabel: string
   replacedById: number | null
+  storedName: string
   note: string
   uploadedAt: string
   appliedAt: string | null
   cancelledAt: string | null
   rowCount: number
   entryCount: number
+  activeCollectionTotal: number
+  activeExpenditureTotal: number
+  summary: UploadSummary
+}
+
+export interface Detected {
+  format: string
+  code: string
+  label: string
+  sheet: string
+  headerRow: number
+  confidence: number
+}
+
+export interface SheetInfo {
+  name: string
+  maxRow: number
+  maxCol: number
+}
+
+export interface Inspect {
+  path: string
+  fileName: string
+  byteSize: number
+  sha256: string
+  sheets: SheetInfo[]
+  detected: Detected[]
+  suggestedMonth: number | null
+  duplicateOf: UploadFile | null
+}
+
+export interface RowOverride {
+  sheet: string
+  rowNo: number
+  programId?: number | null
+  programGroupId?: number | null
+}
+
+export interface PreviewRequest {
+  path: string
+  schoolYearId: number
+  fiscalMonthId: number
+  formatCode: string
+  dataKind: DataKind
+  overrides: RowOverride[]
+  replaceFileId?: number | null
+  note?: string | null
+}
+
+export interface Issue {
+  level: 'info' | 'check' | 'error'
+  message: string
+}
+
+export interface PreviewRow {
+  seq: number
+  sheet: string
+  rowNo: number
+  programText: string
+  programName: string
+  programSuggestion: string
+  student: string
+  fundText: string
+  fundName: string
+  itemName: string
+  entryKind: string
+  amount: number
+  counterparty: string
+  status: 'ok' | 'check' | 'error' | 'skip'
+  included: boolean
+  issues: Issue[]
+}
+
+export interface UnresolvedProgram {
+  text: string
+  count: number
+  suggestionProgramId: number | null
+  suggestionName: string
+}
+
+export interface UnresolvedFund {
+  text: string
+  count: number
+}
+
+export interface Preview {
+  formatCode: string
+  formatLabel: string
+  dataKind: DataKind
+  dataKindLabel: string
+  summary: UploadSummary
+  rows: PreviewRow[]
+  unresolvedPrograms: UnresolvedProgram[]
+  unresolvedFunds: UnresolvedFund[]
+  fileIssues: Issue[]
+  canCommit: boolean
+  blockReasons: string[]
+  warnings: string[]
+  existingApplied: UploadFile | null
+}
+
+export interface CommitResult {
+  file: UploadFile
+  entryCount: number
+  collectionTotal: number
+  expenditureTotal: number
+}
+
+export interface Totals {
+  entryCount: number
+  collectionTotal: number
+  expenditureTotal: number
+  programCount: number
+  byFund: SummaryLine[]
+}
+
+export interface Dependent {
+  fileId: number
+  fileName: string
+  dataKindLabel: string
+  entryCount: number
+}
+
+export interface Impact {
+  action: 'cancel' | 'restore'
+  file: UploadFile
+  current: UploadFile | null
+  before: Totals
+  after: Totals
+  monthLabel: string
+  dependents: Dependent[]
+  blocked: string[]
+  warnings: string[]
+}
+
+export interface UploadApply {
+  id: number
+  action: 'apply' | 'restore' | 'cancel' | 'replace'
+  entryCount: number
+  collectionTotal: number
+  expenditureTotal: number
+  note: string
+  createdAt: string
+}
+
+export interface SourceRow {
+  sheet: string
+  rowNo: number
+  cells: string[]
+}
+
+export interface UploadDetail {
+  file: UploadFile
+  versions: UploadFile[]
+  rows: PreviewRow[]
+  applies: UploadApply[]
+  sourceRows: SourceRow[]
 }
 
 export type Flow = 'collection' | 'expenditure' | 'transfer'
 export type Stage = 'planned' | 'actual'
 
 export interface MonthSummaryRow {
-  programId: number
+  programId: number | null
   programName: string
-  fundTypeId: number
+  fundTypeId: number | null
   fundTypeName: string
   amountItemId: number
   amountItemName: string

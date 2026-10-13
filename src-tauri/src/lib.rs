@@ -13,6 +13,7 @@ pub mod commands;
 pub mod db;
 pub mod domain;
 pub mod error;
+pub mod excel;
 pub mod logging;
 pub mod model;
 pub mod repo;
@@ -27,6 +28,7 @@ pub const DB_FILE: &str = "asaccounting.db";
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // 개발·시험용: 환경변수가 있으면 실사용 자료 폴더 대신 그 폴더를 쓴다 (연습용 DB).
             let dir = match std::env::var("ASACCOUNTING_DATA_DIR") {
@@ -47,6 +49,10 @@ pub fn run() {
                     format!("{} ({})", e.message, e.detail.unwrap_or_default()),
                 )
             })?;
+            // 반영 도중 앱이 꺼져 DB 에 없는 보관 파일이 남았으면 치운다.
+            if let Err(e) = db.read(|c| repo::upload::cleanup_orphans(c, &dir)) {
+                log::warn!("보관 파일 정리 실패(계속 진행): {}", e.message);
+            }
             app.manage(db);
             Ok(())
         })
@@ -65,7 +71,23 @@ pub fn run() {
             commands::catalog::amount_item_save,
             commands::ledger::month_summary,
             commands::ledger::program_list,
-            commands::ledger::upload_list,
+            commands::upload::upload_inspect,
+            commands::upload::upload_preview,
+            commands::upload::upload_commit,
+            commands::upload::upload_list,
+            commands::upload::upload_detail,
+            commands::upload::upload_impact,
+            commands::upload::upload_cancel,
+            commands::upload::upload_restore,
+            commands::upload::upload_kinds,
+            commands::upload::program_map_save,
+            commands::upload::program_group_list,
+            commands::upload::program_alias_delete,
+            commands::upload::fund_alias_list,
+            commands::upload::fund_alias_save,
+            commands::upload::fund_alias_delete,
+            commands::upload::month_close,
+            commands::upload::month_reopen,
         ])
         .run(tauri::generate_context!())
         .expect("앱을 시작하지 못했습니다");

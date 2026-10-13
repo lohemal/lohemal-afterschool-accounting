@@ -3,9 +3,11 @@
 
 pub mod audit;
 pub mod catalog;
+pub mod fundalias;
 pub mod ledger;
 pub mod program;
 pub mod setting;
+pub mod student;
 pub mod upload;
 pub mod year;
 

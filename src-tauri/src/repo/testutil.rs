@@ -47,9 +47,10 @@ impl Fixture {
         NewEntry {
             school_year_id: self.year_id,
             fiscal_month_id: self.months[month_seq - 1],
-            program_id: self.program_coding,
+            program_id: Some(self.program_coding),
+            program_group_id: None,
             student_id: None,
-            fund_type_id: self.fund_beneficiary,
+            fund_type_id: Some(self.fund_beneficiary),
             amount_item_id: self.item_instructor,
             flow: flow.into(),
             entry_kind: kind.into(),
