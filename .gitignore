@@ -1,0 +1,45 @@
+# 의존성·빌드 산출물
+node_modules/
+dist/
+dist-ssr/
+*.local
+src-tauri/target/
+src-tauri/gen/
+
+# ── 개인정보·회계자료 보호 ───────────────────────────────────────
+# 실제 수강생명단·강사료·교재비 파일은 저장소에 절대 넣지 않는다.
+# 시험용 가명 자료는 test/fixtures/ 아래에만 둔다.
+*.xlsx
+*.xlsm
+*.xls
+*.csv
+*.hwp
+*.hwpx
+*.pdf
+!test/fixtures/**/*.xlsx
+!test/fixtures/**/*.xlsm
+
+# SQLite 자료·백업 (연습용 DB 포함)
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+backups/
+exports/
+logs/
+
+# 업데이터 서명 키 (절대 커밋 금지)
+*.key
+*.key.pub
+.tauri/
+
+# 편집기
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# 연습용 자료 폴더 (npm run app:sandbox)
+.sandbox/

@@ -1,0 +1,30 @@
+# 방과후 회계 검증 매니저 (AfterSchool Accounting Manager)
+
+방과후학교 회계 자료를 **월별·프로그램별·재원별**로 대조해 징수액과 지출액이 어긋난 위치를 빠르게 찾아 주는
+Windows 로컬 데스크톱 프로그램입니다. 모든 차액을 자동으로 해결하는 것이 아니라, 담당자가 직접 확인해야 할
+프로그램과 금액을 정확하게 좁혀 주는 것이 1차 목표입니다.
+
+- Tauri 2 · React 18 · TypeScript · Rust · SQLite(rusqlite bundled) · calamine(Excel 읽기)
+- 자료는 `%APPDATA%\kr.school.asaccounting\asaccounting.db` 에만 저장되며 외부로 전송되지 않습니다.
+- 기존 **방과후 통합 매니저** 와는 별도 프로젝트입니다.
+
+## 현재 단계
+
+**P0 — 프로젝트 기반 구축 완료.** 설계와 DB 구조는 [docs/01-P0-설계.md](docs/01-P0-설계.md) 를 보세요.
+다음 단계(P1 엑셀 업로드)는 사용자 확인 후 시작합니다.
+
+## 실행·검사
+
+```bash
+npm install
+npm run app          # 개발 실행 (vite 1470 + tauri dev)
+npm run check        # tsc + vitest + cargo test
+npm run app:build    # NSIS 설치본
+```
+
+## 개인정보 규칙
+
+- 실제 수강생명단·강사료·교재비 파일(`*.xlsx`, `*.xlsm`)은 `.gitignore` 로 저장소에서 제외됩니다.
+  시험용 **가명** 자료만 `test/fixtures/` 아래에 둘 수 있습니다.
+- DB·백업·로그 파일도 저장소에서 제외됩니다.
+- 로그와 변경 이력에는 학생 이름·금액을 적지 않습니다.

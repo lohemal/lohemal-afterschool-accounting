@@ -1,0 +1,39 @@
+[package]
+name = "asaccounting"
+version = "0.0.1"
+description = "방과후 회계 검증 매니저"
+authors = ["lohemal"]
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "asaccounting_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled", "backup"] }
+chrono = "0.4"
+log = { version = "0.4", features = ["std"] }
+# Excel 읽기 — 순수 Rust, xlsx/xlsm/xls 모두 읽음. 형제 프로젝트(방과후 통합 매니저·견적서 통합 관리)에서
+# 실제 양식을 읽는 데 검증된 라이브러리. P1 업로드에서 쓴다.
+calamine = "0.26"
+# SHA-256 — 같은 파일 재업로드 감지(upload_file.sha256).
+sha2 = "0.10"
+hex = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
