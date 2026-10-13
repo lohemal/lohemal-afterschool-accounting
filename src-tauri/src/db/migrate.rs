@@ -111,10 +111,17 @@ pub fn run(conn: &mut Connection) -> AppResult<()> {
         return Ok(());
     }
     if from > 0 {
+        // 자료 보존이 먼저다: 직전 백업을 만들고 검증하지 못하면 마이그레이션을 시작하지 않는다 (DB 는 옛 버전 그대로).
         match backup_before_migrate(conn, from) {
             Ok(Some(name)) => log::info!("마이그레이션 전 백업: {name}"),
             Ok(None) => {}
-            Err(e) => log::warn!("마이그레이션 전 백업 실패(계속 진행): {e}"),
+            Err(e) => {
+                return Err(AppError::new(
+                    "MIGRATE_BACKUP",
+                    format!("자료 구조를 갱신하기 전에 백업을 만들지 못해 갱신을 시작하지 않았습니다. 백업 폴더를 확인한 뒤 다시 실행해 주세요. ({})", e.message),
+                )
+                .detail(e.detail.unwrap_or_default()));
+            }
         }
     }
     apply(conn, from)

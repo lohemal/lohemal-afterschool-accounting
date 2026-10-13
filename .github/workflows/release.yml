@@ -36,7 +36,7 @@ jobs:
       - name: Collect assets (ASCII names) + latest.json
         shell: pwsh
         run: |
-          $ver = (Get-Content src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          $ver = (Get-Content src-tauri/tauri.conf.json -Raw -Encoding UTF8 | ConvertFrom-Json).version
           $tag = "v$ver"
           if ("${{ github.ref_name }}" -ne $tag) { throw "태그 ${{ github.ref_name }} 과 tauri.conf.json 버전 $ver 이 다릅니다." }
           $dir = "src-tauri/target/release/bundle/nsis"
@@ -47,7 +47,7 @@ jobs:
           $name = "asaccounting_${ver}_x64-setup.exe"
           Copy-Item $exe.FullName "out/$name"
           Copy-Item $sig.FullName "out/$name.sig"
-          $signature = (Get-Content $sig.FullName -Raw).Trim()
+          $signature = (Get-Content $sig.FullName -Raw -Encoding UTF8).Trim()
           $url = "https://github.com/${{ github.repository }}/releases/download/$tag/$name"
           $json = @{ version = $ver; notes = "방과후 회계 검증 매니저 $tag"; pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"); platforms = @{ "windows-x86_64" = @{ signature = $signature; url = $url } } } | ConvertTo-Json -Depth 5
           [System.IO.File]::WriteAllText("out/latest.json", $json, (New-Object System.Text.UTF8Encoding $false))

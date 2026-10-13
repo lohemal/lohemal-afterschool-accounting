@@ -828,3 +828,162 @@ fn p6_e_installer_signature_verifies_with_public_key() {
     assert!(app_text.contains("releases/latest/download/latest.json"), "업데이트 주소가 실행 파일에 들어 있다");
     assert!(app_text.contains(pub_b64), "공개키가 실행 파일에 들어 있다");
 }
+
+// ══════════════════════════════════════════════════════════════════════════
+// P6.1 — 옛 스키마 DB 의 연속 마이그레이션 검증 (앱이 쓰는 경로 `Db::open` 그대로) · 실패 시 보존
+//   `ASACCOUNTING_MIGRATE_DIR=<자료 폴더>` 에 있는 asaccounting.db 를 올린다. 건수·합계만 출력하고 이름은 출력하지 않는다.
+//   cargo test --lib p61_migrate -- --ignored --nocapture
+// ══════════════════════════════════════════════════════════════════════════
+
+fn table_exists(c: &rusqlite::Connection, t: &str) -> bool {
+    c.query_row("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?1", [t], |r| r.get::<_, i64>(0)).unwrap_or(0) > 0
+}
+
+/// 버전에 따라 표가 없을 수 있다 → "미지원" 으로 적는다.
+fn baseline(c: &rusqlite::Connection) -> std::collections::BTreeMap<String, String> {
+    let mut m = std::collections::BTreeMap::new();
+    let cnt = |t: &str, sql: &str| -> String { if table_exists(c, t) { c.query_row(sql, [], |r| r.get::<_, i64>(0)).map(|v| v.to_string()).unwrap_or_else(|e| format!("오류 {e}")) } else { "미지원".into() } };
+    m.insert("schema".into(), c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap().to_string());
+    m.insert("ledger_count".into(), cnt("ledger_entry", "SELECT count(*) FROM ledger_entry"));
+    m.insert("ledger_active".into(), cnt("ledger_entry", "SELECT count(*) FROM ledger_entry WHERE state = 'active'"));
+    m.insert("ledger_sum".into(), cnt("ledger_entry", "SELECT coalesce(sum(amount), 0) FROM ledger_entry WHERE state = 'active'"));
+    m.insert("ledger_sum_collection".into(), cnt("ledger_entry", "SELECT coalesce(sum(amount), 0) FROM ledger_entry WHERE state = 'active' AND flow = 'collection'"));
+    if table_exists(c, "ledger_entry") {
+        let mut st = c.prepare("SELECT coalesce(fund_type_id, 0), coalesce(sum(amount), 0) FROM ledger_entry WHERE state = 'active' GROUP BY fund_type_id ORDER BY 1").unwrap();
+        let v: Vec<String> = st.query_map([], |r| Ok(format!("{}:{}", r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))).unwrap().map(|x| x.unwrap()).collect();
+        m.insert("by_fund".into(), v.join(","));
+    }
+    m.insert("students".into(), cnt("student", "SELECT count(*) FROM student"));
+    m.insert("programs".into(), cnt("program", "SELECT count(*) FROM program"));
+    m.insert("uploads".into(), cnt("upload_file", "SELECT count(*) FROM upload_file"));
+    m.insert("allocations".into(), cnt("allocation", "SELECT count(*) FROM allocation"));
+    m.insert("transfers".into(), cnt("adjustment", "SELECT count(*) FROM adjustment WHERE kind = 'fund_transfer'"));
+    m.insert("refunds".into(), cnt("adjustment", "SELECT count(*) FROM adjustment WHERE kind IN ('refund', 'refund_return')"));
+    m.insert("month_closes".into(), cnt("month_close", "SELECT count(*) FROM month_close"));
+    m.insert("audit".into(), cnt("audit_log", "SELECT count(*) FROM audit_log"));
+    m.insert("voucher_targets".into(), cnt("voucher_target", "SELECT count(*) FROM voucher_target"));
+    m.insert("after_voucher_targets".into(), cnt("after_voucher_target", "SELECT count(*) FROM after_voucher_target"));
+    m
+}
+
+#[test]
+#[ignore]
+fn p61_migrate_old_db_through_app_path() {
+    let Ok(dir) = std::env::var("ASACCOUNTING_MIGRATE_DIR") else {
+        eprintln!("ASACCOUNTING_MIGRATE_DIR 없음 — 건너뜀");
+        return;
+    };
+    let dir = PathBuf::from(dir);
+    let db_path = dir.join("asaccounting.db");
+    let before = {
+        let c = rusqlite::Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        baseline(&c)
+    };
+    println!("## 마이그레이션 전 기준값 (v{})", before["schema"]);
+    for (k, v) in &before {
+        println!("  {k} = {v}");
+    }
+    // 앱이 쓰는 경로 그대로: Db::open → 마이그레이션 직전 백업(패키지) → 연속 마이그레이션
+    let db = Db::open(&db_path).expect("Db::open");
+    let after = db.read(|c| Ok(baseline(c))).unwrap();
+    println!("## 마이그레이션 후 (v{})", after["schema"]);
+    for (k, v) in &after {
+        println!("  {k} = {v}");
+    }
+    assert_eq!(after["schema"], crate::db::migrate::latest_version().to_string());
+    for k in ["ledger_count", "ledger_active", "ledger_sum", "ledger_sum_collection", "by_fund", "students", "programs", "uploads", "allocations", "transfers", "refunds", "month_closes", "audit"] {
+        if before.get(k).map(|v| v != "미지원").unwrap_or(false) {
+            assert_eq!(before[k], after[k], "{k} 보존");
+        }
+    }
+    assert_ne!(after["voucher_targets"], "미지원", "자유수강권 표 생성");
+    assert_ne!(after["after_voucher_targets"], "미지원", "이용권 대상 표 생성");
+    // 무결성·외래키
+    db.read(|c| {
+        let ic: String = c.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
+        assert_eq!(ic, "ok");
+        let fk = c.prepare("PRAGMA foreign_key_check")?.query_map([], |_| Ok(()))?.count();
+        assert_eq!(fk, 0);
+        Ok(())
+    })
+    .unwrap();
+    // 마이그레이션 직전 백업이 검증된 채 있다
+    let l = db.read(|c| backup::list(c, &dir)).unwrap();
+    let mig: Vec<&BackupInfo> = l.backups.iter().filter(|b| b.kind == "migration").collect();
+    println!("마이그레이션 직전 백업: {}개 (검증됨 {}개, 스키마 {:?})", mig.len(), mig.iter().filter(|b| b.verified).count(), mig.iter().map(|b| b.schema_version).collect::<Vec<_>>());
+    assert!(mig.iter().any(|b| b.verified && b.schema_version.to_string() == before["schema"]));
+    // 무결성 검사 (학년도가 있을 때)
+    let years = db.read(crate::repo::year::list).unwrap();
+    for y in &years {
+        let rep = db.read(|c| integrity::run(c, &dir, y.id)).unwrap();
+        println!("무결성 {}: 정상 {} · 확인 필요 {} · 오류 {}", y.name, rep.ok_count, rep.check_count, rep.error_count);
+        for it in rep.items.iter().filter(|i| i.level == "error") {
+            println!("  [오류] {} — {}", it.title, it.detail);
+        }
+        assert_eq!(rep.error_count, 0);
+    }
+    // 백업·복원 왕복 (격리 폴더 안)
+    let b = db.read(|c| backup::create(c, &dir, "manual", "검증")).unwrap();
+    assert!(b.verified);
+    let r = restore::apply(&db, Path::new(&b.path), true).unwrap();
+    assert!(r.ok);
+    let again = db.read(|c| Ok(baseline(c))).unwrap();
+    assert_eq!(again["ledger_count"], after["ledger_count"]);
+    println!("백업·복원 왕복 정상 ({})", b.encryption_label);
+}
+
+#[test]
+#[ignore]
+fn p61_migrate_failure_keeps_old_db_and_backup() {
+    let Ok(dir) = std::env::var("ASACCOUNTING_MIGRATE_FAIL_DIR") else {
+        eprintln!("ASACCOUNTING_MIGRATE_FAIL_DIR 없음 — 건너뜀");
+        return;
+    };
+    let dir = PathBuf::from(dir);
+    let db_path = dir.join("asaccounting.db");
+    // 다음 마이그레이션(006)이 만들 표를 미리 다른 구조로 만들어 SQL 실패를 일으킨다
+    let before = {
+        let c = rusqlite::Connection::open(&db_path).unwrap();
+        assert_eq!(c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 5, "v5 복사본이어야 한다");
+        c.execute("CREATE TABLE voucher_policy (x INTEGER)", []).unwrap();
+        baseline(&c)
+    };
+    let err = match Db::open(&db_path) { Ok(_) => panic!("열리면 안 된다"), Err(e) => e };
+    println!("실패 오류: {} / {}", err.code, err.message);
+    assert_eq!(err.code, "MIGRATE");
+    let after = {
+        let c = rusqlite::Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        baseline(&c)
+    };
+    assert_eq!(after["schema"], "5", "버전이 올라가지 않았다 (잘못된 완료 표시 없음)");
+    assert_eq!(before, after, "자료 그대로");
+    let bk: Vec<PathBuf> = std::fs::read_dir(dir.join("backups")).unwrap().flatten().map(|e| e.path()).filter(|p| p.extension().map(|e| e == "asbk" || e == "zip").unwrap_or(false)).collect();
+    assert!(!bk.is_empty(), "마이그레이션 직전 백업이 남아 있다");
+    let v = backup::verify(&bk[0], &dir).unwrap();
+    assert!(v.ok, "{:?}", v.errors);
+    println!("마이그레이션 직전 백업 {}개 검증 통과, DB v5 보존", bk.len());
+}
+
+#[test]
+fn p61_migration_aborts_when_pre_migration_backup_cannot_be_made() {
+    // 파일 DB 를 v8 로 만들고, backups 자리를 파일로 막아 백업이 실패하게 한다 → 마이그레이션을 시작하지 않는다
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("asaccounting.db");
+    {
+        let mut c = rusqlite::Connection::open(&p).unwrap();
+        crate::db::migrate::run_up_to(&mut c, 8).unwrap();
+        year::create(&c, 2026).unwrap();
+    }
+    std::fs::write(dir.path().join("backups"), b"not a dir").unwrap();
+    let err = match Db::open(&p) { Ok(_) => panic!("열리면 안 된다"), Err(e) => e };
+    assert_eq!(err.code, "MIGRATE_BACKUP", "{err:?}");
+    let c = rusqlite::Connection::open(&p).unwrap();
+    assert_eq!(c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap(), 8, "백업 없이는 올리지 않는다");
+    let n: i64 = c.query_row("SELECT count(*) FROM school_year", [], |r| r.get(0)).unwrap();
+    assert_eq!(n, 1);
+    // 막힌 것을 치우면 정상 진행
+    drop(c);
+    std::fs::remove_file(dir.path().join("backups")).unwrap();
+    let db = Db::open(&p).unwrap();
+    assert_eq!(db.read(|c| Ok(crate::db::migrate::current_version(c)?)).unwrap(), crate::db::migrate::latest_version());
+}
