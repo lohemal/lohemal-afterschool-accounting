@@ -48,6 +48,7 @@ import type {
   VoucherHistory,
   VoucherPolicy,
   VoucherPolicyInput,
+  VoucherPolicyPreview,
   VoucherPriorInput,
   VoucherRefundInput,
   VoucherRefundRow,
@@ -114,6 +115,7 @@ export const api = {
 
   voucherPolicyCurrent: (schoolYearId: number) => invoke<VoucherPolicy | null>('voucher_policy_current', { schoolYearId }),
   voucherPolicyHistory: (schoolYearId: number) => invoke<VoucherPolicy[]>('voucher_policy_history', { schoolYearId }),
+  voucherPolicyPreview: (input: VoucherPolicyInput) => invoke<VoucherPolicyPreview>('voucher_policy_preview', { input }),
   voucherPolicySave: (input: VoucherPolicyInput) => invoke<VoucherPolicy>('voucher_policy_save', { input }),
   voucherExceptionList: (schoolYearId: number, includeHistory?: boolean) => invoke<VoucherException[]>('voucher_exception_list', { schoolYearId, includeHistory }),
   voucherExceptionSave: (input: VoucherExceptionInput) => invoke<VoucherException>('voucher_exception_save', { input }),

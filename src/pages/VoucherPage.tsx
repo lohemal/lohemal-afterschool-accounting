@@ -11,6 +11,7 @@ import type {
   VoucherDecision,
   VoucherException,
   VoucherPolicy,
+  VoucherPolicyPreview,
   VoucherProposal,
   VoucherRefundRow,
   VoucherRetroPreview,
@@ -34,8 +35,8 @@ const TABS: [Tab, string][] = [
 const today = () => new Date().toISOString().slice(0, 10)
 
 const TARGET_CLS: Record<string, string> = { pending: 'badge badge--soon', confirmed: 'badge badge--ok', ended: 'badge badge--muted', cancelled: 'badge badge--muted' }
-const USAGE_CLS: Record<string, string> = { ok: 'badge badge--ok', retro: 'badge badge--navy', over: 'badge badge--bad', decide: 'badge badge--soon', pending: 'badge badge--soon', outside: 'badge badge--muted' }
-const PROPOSAL_CLS: Record<string, string> = { normal: 'badge badge--ok', blocked: 'badge badge--bad', decide: 'badge badge--soon', pending: 'badge badge--soon', over: 'badge badge--bad', short: 'badge badge--muted' }
+const USAGE_CLS: Record<string, string> = { ok: 'badge badge--ok', retro: 'badge badge--navy', over: 'badge badge--bad', decide: 'badge badge--soon', pending: 'badge badge--soon', outside: 'badge badge--muted', excluded: 'badge badge--muted' }
+const PROPOSAL_CLS: Record<string, string> = { normal: 'badge badge--ok', check: 'badge badge--soon', blocked: 'badge badge--bad', decide: 'badge badge--soon', pending: 'badge badge--soon', over: 'badge badge--bad', short: 'badge badge--muted' }
 const REFUND_CLS: Record<string, string> = { none: 'badge badge--bad', planned: 'badge badge--soon', partial: 'badge badge--navy', complete: 'badge badge--ok', cancelled: 'badge badge--muted' }
 
 export function VoucherPage() {
@@ -279,7 +280,15 @@ function Policy({ yearId }: { yearId: number }) {
   const [s2, setS2] = useState(0)
   const [carry, setCarry] = useState(false)
   const [note, setNote] = useState('')
-  const [confirming, setConfirming] = useState(false)
+  const [s1From, setS1From] = useState('')
+  const [s1To, setS1To] = useState('')
+  const [s2From, setS2From] = useState('')
+  const [s2To, setS2To] = useState('')
+  const [allItems, setAllItems] = useState(true)
+  const [itemIds, setItemIds] = useState<number[]>([])
+  const [confirming, setConfirming] = useState<VoucherPolicyPreview | null>(null)
+  const cat = useQuery({ queryKey: ['catalog'], queryFn: api.catalogList })
+  const toast = useToast()
   const [xStudent, setXStudent] = useState<number | ''>('')
   const [xBasis, setXBasis] = useState<VoucherBasis>('annual')
   const [xAnnual, setXAnnual] = useState(0)
@@ -298,19 +307,64 @@ function Policy({ yearId }: { yearId: number }) {
     setS1(p.semester1Limit ?? 0)
     setS2(p.semester2Limit ?? 0)
     setCarry(p.carryOver)
+    setS1From(p.semester1From)
+    setS1To(p.semester1To)
+    setS2From(p.semester2From)
+    setS2To(p.semester2To)
+    setAllItems(p.allItemsEligible)
+    setItemIds(p.eligibleItemIds)
   }, [current.data])
 
+  const policyInput = () => ({
+    schoolYearId: yearId,
+    basis,
+    annualLimit: basis === 'annual' ? annual : null,
+    semester1Limit: basis === 'semester' ? s1 : null,
+    semester2Limit: basis === 'semester' ? s2 : null,
+    carryOver: carry,
+    semester1From: s1From || null,
+    semester1To: s1To || null,
+    semester2From: s2From || null,
+    semester2To: s2To || null,
+    eligibleItemIds: allItems ? null : itemIds,
+    note,
+  })
+  async function openConfirm() {
+    try {
+      setConfirming(await api.voucherPolicyPreview(policyInput()))
+    } catch (e) {
+      toast.show(errorMessage(e), true)
+    }
+  }
+  const activeItems = (cat.data?.amountItems ?? []).filter((i) => i.isActive)
+
   const policyLabel = (p: VoucherPolicy | VoucherException) => (p.basis === 'annual' ? `연간 ${won(p.annualLimit)}원` : p.basis === 'semester' ? `1학기 ${won(p.semester1Limit)}원 · 2학기 ${won(p.semester2Limit)}원 · ${p.carryOver ? '잔액 이월' : '이월 없음'}` : '제한 없음')
+  const policyExtra = (p: VoucherPolicy) => `${p.semesterDefault ? '기본 학기' : `1학기 ${p.semester1From}~${p.semester1To} · 2학기 ${p.semester2From}~${p.semester2To}`}${p.uncoveredMonths.length ? ` · 미지원 ${p.uncoveredMonths.join(',')}` : ''} · 항목: ${p.allItemsEligible ? '모든 항목' : p.eligibleItemNames.join('·')}`
 
   return (
     <>
-      <Card title="학년도 지원 한도 정책" right={current.data ? <span className="muted">현재: {policyLabel(current.data)} (등록 {shortDateTime(current.data.createdAt)})</span> : <span className="muted">아직 정책이 없습니다</span>}>
+      <Card title="학년도 지원 한도 정책" right={current.data ? <span className="muted">현재: {policyLabel(current.data)} · {policyExtra(current.data)} (등록 {shortDateTime(current.data.createdAt)})</span> : <span className="muted">아직 정책이 없습니다</span>}>
         <div className="upload__top">
           <PolicyFields basis={basis} setBasis={setBasis} annual={annual} setAnnual={setAnnual} s1={s1} setS1={setS1} s2={s2} setS2={setS2} carry={carry} setCarry={setCarry} />
           <label className="field" style={{ gridColumn: 'span 2' }}><span>메모</span><input className="input" value={note} onChange={(e) => setNote(e.target.value)} placeholder="예: 2026학년도 교육청 지침" /></label>
         </div>
+        <div className="upload__top" style={{ marginTop: 8 }}>
+          <label className="field"><span>1학기 시작일</span><input className="input" type="date" value={s1From} onChange={(e) => setS1From(e.target.value)} /></label>
+          <label className="field"><span>1학기 종료일</span><input className="input" type="date" value={s1To} onChange={(e) => setS1To(e.target.value)} /></label>
+          <label className="field"><span>2학기 시작일</span><input className="input" type="date" value={s2From} onChange={(e) => setS2From(e.target.value)} /></label>
+          <label className="field"><span>2학기 종료일</span><input className="input" type="date" value={s2To} onChange={(e) => setS2To(e.target.value)} /></label>
+          <div className="field" style={{ gridColumn: 'span 2' }}><span>지원 대상 항목</span>
+            <div className="row" style={{ height: 'var(--h-control, 28px)' }}>
+              <label className="row"><input type="checkbox" checked={allItems} onChange={(e) => { setAllItems(e.target.checked); if (e.target.checked) setItemIds([]); else setItemIds(activeItems.map((i) => i.id)) }} /> 모든 항목</label>
+              {!allItems && activeItems.map((i) => (
+                <label key={i.id} className="row"><input type="checkbox" checked={itemIds.includes(i.id)} onChange={(e) => setItemIds((s) => (e.target.checked ? [...s, i.id] : s.filter((x) => x !== i.id)))} /> {i.name}</label>
+              ))}
+            </div>
+          </div>
+        </div>
         <div className="row" style={{ marginTop: 10, justifyContent: 'flex-end' }}>
-          <Button variant="primary" onClick={() => setConfirming(true)}>{current.data ? '정책 변경…' : '정책 등록…'}</Button>
+          <span className="muted">비워 두면 기본값 (1학기 3/1~8/31 · 2학기 9/1~다음 해 2월 말). 학기 사이 공백은 미지원 기간입니다.</span>
+          <Button variant="primary" onClick={openConfirm}>{current.data ? '정책 변경…' : '정책 등록…'}</Button>
         </div>
         <p className="muted" style={{ marginBottom: 0 }}>정책을 바꾸면 이전 정책은 이력으로 남고, 이후 사용액 계산은 새 정책으로 다시 계산됩니다. 이미 등록된 경정·환불은 바뀌지 않습니다.</p>
       </Card>
@@ -346,10 +400,10 @@ function Policy({ yearId }: { yearId: number }) {
         {(history.data ?? []).length > 0 && (
           <div className="tableWrap">
             <table className="table">
-              <thead><tr><th>등록</th><th>한도</th><th>메모</th><th className="center">상태</th></tr></thead>
+              <thead><tr><th>등록</th><th>한도</th><th>학기 · 지원 항목</th><th>메모</th><th className="center">상태</th></tr></thead>
               <tbody>
                 {(history.data ?? []).map((p) => (
-                  <tr key={p.id} className={p.supersededAt ? 'row--off' : ''}><td className="muted">{shortDateTime(p.createdAt)}</td><td>{policyLabel(p)}</td><td className="wrap">{p.note}</td><td className="center">{p.supersededAt ? <span className="badge badge--muted">대체됨 {shortDateTime(p.supersededAt)}</span> : <span className="badge badge--ok">현재</span>}</td></tr>
+                  <tr key={p.id} className={p.supersededAt ? 'row--off' : ''}><td className="muted">{shortDateTime(p.createdAt)}</td><td>{policyLabel(p)}</td><td className="wrap" style={{ fontSize: 12 }}>{policyExtra(p)}</td><td className="wrap">{p.note}</td><td className="center">{p.supersededAt ? <span className="badge badge--muted">대체됨 {shortDateTime(p.supersededAt)}</span> : <span className="badge badge--ok">현재</span>}</td></tr>
                 ))}
               </tbody>
             </table>
@@ -357,8 +411,12 @@ function Policy({ yearId }: { yearId: number }) {
         )}
       </Card>
       {confirming && (
-        <Modal title="지원 한도 정책 저장" onClose={() => setConfirming(false)} footer={<><Button onClick={() => setConfirming(false)}>취소</Button><Button variant="primary" onClick={() => run(() => api.voucherPolicySave({ schoolYearId: yearId, basis, annualLimit: basis === 'annual' ? annual : null, semester1Limit: basis === 'semester' ? s1 : null, semester2Limit: basis === 'semester' ? s2 : null, carryOver: carry, note }), '정책을 저장했습니다.', () => setConfirming(false))}>저장</Button></>}>
-          <p>{basis === 'annual' ? `연간 ${won(annual)}원` : basis === 'semester' ? `1학기 ${won(s1)}원 · 2학기 ${won(s2)}원 · ${carry ? '잔액 이월' : '이월 없음'}` : '제한 없음'} 으로 저장합니다. 이전 정책은 이력으로 남습니다.</p>
+        <Modal title="지원 한도 정책 저장" onClose={() => setConfirming(null)} footer={<><Button onClick={() => setConfirming(null)}>취소</Button><Button variant="primary" disabled={confirming.blocked.length > 0} onClick={() => run(() => api.voucherPolicySave(policyInput()), '정책을 저장했습니다.', () => setConfirming(null))}>저장</Button></>}>
+          <p style={{ marginTop: 0 }}>{basis === 'annual' ? `연간 ${won(annual)}원` : basis === 'semester' ? `1학기 ${won(s1)}원 · 2학기 ${won(s2)}원 · ${carry ? '잔액 이월' : '이월 없음'}` : '제한 없음'} 으로 저장합니다. 이전 정책은 이력으로 남습니다.</p>
+          <p className="muted">학기: 1학기 {confirming.semester1From} ~ {confirming.semester1To} · 2학기 {confirming.semester2From} ~ {confirming.semester2To}<br />지원 대상 항목: {confirming.eligibleItemNames.join(' · ')}</p>
+          {confirming.affectedTransferCount > 0 && <Notice>지원 대상에서 빠지는 항목에 이미 등록된 자유수강권 경정 {confirming.affectedTransferCount}건 · {won(confirming.affectedTransferTotal)}원이 있습니다. 완료된 경정은 자동으로 취소·수정하지 않습니다.</Notice>}
+          {confirming.warnings.map((w) => <div key={w} className="notice notice--soon" style={{ marginTop: 6 }}>{w}</div>)}
+          {confirming.blocked.map((b) => <Notice key={b} kind="bad">{b}</Notice>)}
         </Modal>
       )}
       {ending && (
@@ -381,12 +439,15 @@ function UsageSummary({ u }: { u: VoucherUsage }) {
       {u.priorUsed !== null && <div className="stat"><span>이전 학교 사용액</span><strong>{won(u.priorUsed)}</strong></div>}
       <div className="stat"><span>계산 지원액 (적용 기간)</span><strong>{won(u.usedExpected)}</strong></div>
       <div className="stat"><span>실제 자유수강권 사용액</span><strong>{won(u.usedActual)}</strong></div>
+      <div className="stat"><span>방과후이용권 사용액 (별도){u.dual ? ' · 중복 대상자' : ''}</span><strong>{won(u.voucherTotal)}</strong></div>
+      <div className="stat"><span>초3 초과금 / 일반 수익자</span><strong>{won(u.g3xTotal)} / {won(u.generalTotal)}</strong></div>
       {u.pendingTotal > 0 && <div className="stat stat--warn"><span>처리 예정 경정</span><strong>{won(u.pendingTotal)}</strong></div>}
       <div className="stat"><span>남은 한도</span><strong>{u.remaining === null ? (u.basis === 'unlimited' ? '제한 없음' : '—') : won(u.remaining)}</strong></div>
       {u.remainingS1 !== null && <div className="stat"><span>1학기 잔액 / 2학기 잔액</span><strong>{won(u.remainingS1)} / {won(u.remainingS2)}</strong></div>}
       {u.exhaustedYm && <div className="stat stat--warn"><span>한도 소진</span><strong style={{ fontFamily: 'inherit', fontSize: 13 }}>{u.exhaustedYm} 부터 수익자 전환</strong></div>}
       {u.retroTotal > 0 && <div className="stat stat--warn"><span>경정 필요 합계</span><strong>{won(u.retroTotal)}</strong></div>}
       {u.overTotal > 0 && <div className="stat stat--bad"><span>계산보다 많이 사용 (확인 대상)</span><strong>{won(u.overTotal)}</strong></div>}
+      <div className="stat"><span>지원 대상 항목 · 학기</span><strong style={{ fontFamily: 'inherit', fontSize: 12 }}>{u.eligibleItemNames.join('·') || '—'}<br />{u.semesterLabel || '—'}</strong></div>
     </div>
   )
 }
@@ -396,17 +457,19 @@ function UsageRows({ u }: { u: VoucherUsage }) {
   return (
     <div className="tableWrap" style={{ marginTop: 8 }}>
       <table className="table">
-        <thead><tr><th>귀속월</th><th>프로그램</th><th>항목</th><th className="num">수강료</th><th className="num">자유수강권 (실제)</th><th className="num">수익자 (실제)</th><th className="num">기타 재원</th><th className="num">계산 지원액</th><th className="num">계산 수익자</th><th className="num">차이</th><th className="num">남은 한도 (후)</th><th className="center">상태</th></tr></thead>
+        <thead><tr><th>귀속월</th><th>프로그램</th><th>항목</th><th className="num">수강료</th><th className="num">방과후이용권</th><th className="num">자유수강권 (실제)</th><th className="num">초3 초과금</th><th className="num">일반 수익자</th><th className="num">기타 재원</th><th className="num">계산 지원액</th><th className="num">계산 수익자</th><th className="num">차이</th><th className="num">남은 한도 (후)</th><th className="center">상태</th></tr></thead>
         <tbody>
           {u.rows.map((r) => (
-            <tr key={`${r.fiscalMonthId}-${r.programId}-${r.amountItemId}`} className={r.state === 'over' ? 'row--error' : r.state === 'retro' || r.state === 'decide' ? 'row--check' : !r.inWindow ? 'row--off' : ''}>
-              <td>{r.monthLabel}{r.monthClosed ? ' · 확정' : ''}</td>
+            <tr key={`${r.fiscalMonthId}-${r.programId}-${r.amountItemId}`} className={r.state === 'over' ? 'row--error' : r.state === 'retro' || r.state === 'decide' ? 'row--check' : !r.inWindow || r.state === 'excluded' ? 'row--off' : ''}>
+              <td>{r.monthLabel}{r.monthClosed ? ' · 확정' : ''}{r.semester ? <span className="muted"> {r.semester}학기</span> : null}</td>
               <td>{r.programName}</td>
-              <td>{r.itemName}</td>
+              <td>{r.itemName}{!r.eligibleItem ? <span className="muted"> (미지원)</span> : null}</td>
               <td className="num">{won(r.tuition)}</td>
+              <td className="num">{r.voucherActual ? won(r.voucherActual) : <span className="muted">0</span>}</td>
               <td className="num">{won(r.freeActual)}</td>
-              <td className="num">{won(r.beneficiaryActual)}</td>
-              <td className="num" title={r.funds.filter((f) => f.fundName !== '자유수강권').map((f) => `${f.fundName} ${won(f.amount)}`).join(' · ')}>{won(r.otherActual)}</td>
+              <td className="num">{r.g3xActual ? won(r.g3xActual) : <span className="muted">0</span>}</td>
+              <td className="num">{r.generalActual ? won(r.generalActual) : <span className="muted">0</span>}</td>
+              <td className="num" title={r.funds.map((f) => `${f.fundName} ${won(f.amount)}`).join(' · ')}>{won(r.otherActual)}</td>
               <td className="num">{r.inWindow ? won(r.freeExpected) : <span className="muted">—</span>}</td>
               <td className="num">{r.inWindow ? won(r.beneficiaryExpected) : <span className="muted">—</span>}</td>
               <td className={`num ${r.delta > 0 ? 'diffcell--up' : r.delta < 0 ? 'diffcell--down' : ''}`}>{diff(r.delta)}{r.pendingTransfer > 0 ? <span className="muted"> (예정 {won(r.pendingTransfer)})</span> : null}</td>
@@ -452,7 +515,7 @@ function Usage({ yearId }: { yearId: number }) {
         {picked === 'all' && list.length > 0 && (
           <div className="tableWrap">
             <table className="table">
-              <thead><tr><th>학생</th><th className="center">상태</th><th>한도</th><th className="num">이전 학교</th><th className="num">계산 지원액</th><th className="num">실제 사용액</th><th className="num">남은 한도</th><th className="num">경정 필요</th><th className="num">확인 대상</th><th>비고</th></tr></thead>
+              <thead><tr><th>학생</th><th className="center">상태</th><th>한도</th><th className="num">이전 학교</th><th className="num">계산 지원액</th><th className="num">자유수강권 사용액</th><th className="num">이용권 사용액</th><th className="num">초3 초과금</th><th className="num">일반 수익자</th><th className="num">남은 한도</th><th className="num">경정 필요</th><th className="num">확인 대상</th><th>비고</th></tr></thead>
               <tbody>
                 {list.map((u) => (
                   <tr key={u.studentId} className={u.blocked.length > 0 ? 'row--check' : u.overTotal > 0 ? 'row--error' : ''}>
@@ -462,6 +525,9 @@ function Usage({ yearId }: { yearId: number }) {
                     <td className="num">{u.priorUsed === null ? <span className="muted">—</span> : won(u.priorUsed)}</td>
                     <td className="num">{won(u.usedExpected)}</td>
                     <td className="num">{won(u.usedActual)}</td>
+                    <td className="num">{u.voucherTotal ? <>{won(u.voucherTotal)} <span className="badge badge--navy">중복</span></> : <span className="muted">0</span>}</td>
+                    <td className="num">{won(u.g3xTotal)}</td>
+                    <td className="num">{won(u.generalTotal)}</td>
                     <td className="num">{u.remaining === null ? (u.basis === 'unlimited' ? '제한 없음' : '—') : won(u.remaining)}</td>
                     <td className="num">{u.retroTotal > 0 ? won(u.retroTotal) : <span className="muted">0</span>}</td>
                     <td className="num">{u.overTotal > 0 ? won(u.overTotal) : <span className="muted">0</span>}</td>
@@ -518,8 +584,9 @@ function Retro({ yearId }: { yearId: number }) {
   }
 
   const decideRows = useMemo(() => (preview?.usages ?? []).flatMap((u) => u.rows.filter((r) => r.state === 'decide').map((r) => ({ u, r }))), [preview])
-  const chosen = (preview?.proposals ?? []).filter((x) => x.state === 'normal' && selected.has(x.key))
+  const chosen = (preview?.proposals ?? []).filter((x) => (x.state === 'normal' || x.state === 'check') && selected.has(x.key))
   const chosenTotal = chosen.reduce((s, x) => s + x.amount, 0)
+  const selectable = (preview?.proposals ?? []).filter((x) => x.state === 'normal')
 
   function setDecision(studentId: number, fiscalMonthId: number, programId: number, amountItemId: number, freeAmount: number) {
     setDecisions((ds) => [...ds.filter((d) => !(d.studentId === studentId && d.fiscalMonthId === fiscalMonthId && d.programId === programId && d.amountItemId === amountItemId)), { studentId, fiscalMonthId, programId, amountItemId, freeAmount }])
@@ -537,7 +604,7 @@ function Retro({ yearId }: { yearId: number }) {
           decidedOn: decidedOn || null,
           processedOn: processedOn || null,
           status,
-          rows: chosen.map((x) => ({ studentId: x.studentId, fiscalMonthId: x.fiscalMonthId, programId: x.programId, amountItemId: x.amountItemId, fromFundId: x.fromFundId as number, amount: x.amount })),
+          rows: chosen.map((x) => ({ studentId: x.studentId, fiscalMonthId: x.fiscalMonthId, programId: x.programId, amountItemId: x.amountItemId, fromFundId: x.fromFundId as number, amount: x.amount, confirmed: x.state === 'check' })),
           decisions,
         }),
       `경정 묶음을 등록했습니다 (${chosen.length}건, ${won(chosenTotal)}원).`,
@@ -591,10 +658,10 @@ function Retro({ yearId }: { yearId: number }) {
         </Card>
       )}
       {preview && (
-        <Card title={`${decideRows.length > 0 ? '3' : '2'}. 미리보기 결과`} right={<span className="muted">학생 {preview.studentCount}명 · 등록 가능 {preview.normalCount}건 {won(preview.normalTotal)}원 · 그 밖 {preview.blockedCount}건</span>}>
+        <Card title={`${decideRows.length > 0 ? '3' : '2'}. 미리보기 결과`} right={<span className="muted">학생 {preview.studentCount}명 · 등록 가능 {preview.normalCount}건 {won(preview.normalTotal)}원 · 재원 확인 필요 {preview.checkCount}건 {won(preview.checkTotal)}원 · 그 밖 {preview.blockedCount}건</span>}>
           {preview.usages.map((u) => (
             <div key={u.studentId} style={{ marginBottom: 8 }}>
-              <strong>{u.student}</strong> <span className="muted">· {u.limitLabel || '한도 없음'} · 계산 지원액 {won(u.usedExpected)} · 실제 {won(u.usedActual)} · 남은 한도 {u.remaining === null ? '—' : won(u.remaining)}</span>
+              <strong>{u.student}</strong> {u.dual && <span className="badge badge--navy">방과후이용권 중복 대상자 — 초3 초과금 우선</span>} <span className="muted">· {u.limitLabel || '한도 없음'} · 계산 지원액 {won(u.usedExpected)} · 실제 자유수강권 {won(u.usedActual)} · 이용권 {won(u.voucherTotal)} · 남은 한도 {u.remaining === null ? '—' : won(u.remaining)}</span>
               <UsageMessages u={u} />
             </div>
           ))}
@@ -602,23 +669,32 @@ function Retro({ yearId }: { yearId: number }) {
           {preview.proposals.length > 0 && (
             <div className="tableWrap">
               <table className="table">
-                <thead><tr><th className="center"><input type="checkbox" checked={chosen.length > 0 && chosen.length === preview.normalCount} onChange={(e) => setSelected(e.target.checked ? new Set(preview.proposals.filter((x) => x.state === 'normal').map((x) => x.key)) : new Set())} /></th><th>학생</th><th>귀속월</th><th>프로그램</th><th>항목</th><th>변경 전 재원 → 자유수강권</th><th className="num">금액</th><th className="center">상태</th><th>사유</th></tr></thead>
+                <thead><tr><th className="center"><input type="checkbox" checked={selectable.length > 0 && selectable.every((x) => selected.has(x.key))} onChange={(e) => setSelected((s) => { const n = new Set(s); selectable.forEach((x) => (e.target.checked ? n.add(x.key) : n.delete(x.key))); return n })} /></th><th>학생</th><th>귀속월</th><th>프로그램</th><th>항목</th><th className="num">이용권</th><th className="num">초3 초과금</th><th className="num">일반 수익자</th><th className="num">자유수강권</th><th>변경 전 재원 → 자유수강권</th><th className="num">전환액</th><th className="num">전환 후 남는 부담금</th><th className="num">한도 잔액</th><th className="center">상태</th><th>사유 · 담당자 확인</th></tr></thead>
                 <tbody>
                   {preview.proposals.map((x: VoucherProposal) => (
                     <tr key={x.key} className={x.state === 'blocked' || x.state === 'over' ? 'row--error' : x.state !== 'normal' ? 'row--check' : ''}>
-                      <td className="center">{x.state === 'normal' && <input type="checkbox" checked={selected.has(x.key)} onChange={(e) => setSelected((s) => { const n = new Set(s); if (e.target.checked) n.add(x.key); else n.delete(x.key); return n })} />}</td>
+                      <td className="center">{(x.state === 'normal' || x.state === 'check') && <input type="checkbox" checked={selected.has(x.key)} onChange={(e) => setSelected((s) => { const n = new Set(s); if (e.target.checked) n.add(x.key); else n.delete(x.key); return n })} />}</td>
                       <td>{x.student}</td><td>{x.monthLabel}</td><td>{x.programName}</td><td>{x.itemName}</td>
+                      <td className="num">{x.voucherActual ? won(x.voucherActual) : <span className="muted">0</span>}</td>
+                      <td className="num">{x.g3xActual ? won(x.g3xActual) : <span className="muted">0</span>}</td>
+                      <td className="num">{x.generalActual ? won(x.generalActual) : <span className="muted">0</span>}</td>
+                      <td className="num">{x.freeActual ? won(x.freeActual) : <span className="muted">0</span>}</td>
                       <td>{x.fromFundName || <span className="muted">—</span>}</td>
                       <td className="num">{won(x.amount)}</td>
+                      <td className="num">{x.fromFundId !== null ? won(x.remainingAfter) : <span className="muted">—</span>}</td>
+                      <td className="num">{x.limitAfter === null ? <span className="muted">—</span> : won(x.limitAfter)}</td>
                       <td className="center"><span className={PROPOSAL_CLS[x.state]}>{x.stateLabel}</span></td>
-                      <td className="wrap" style={{ fontSize: 12 }}>{x.reasons.join(' / ')}</td>
+                      <td className="wrap" style={{ fontSize: 12, minWidth: 360 }}>
+                        {x.reasons.join(' / ')}
+                        {x.state === 'check' && <div><label className="row"><input type="checkbox" checked={selected.has(x.key)} onChange={(e) => setSelected((s) => { const n = new Set(s); if (e.target.checked) n.add(x.key); else n.delete(x.key); return n })} /> 재원 확인 — 지원 대상 수강료이며 이용권·다른 지원과 겹치지 않음을 확인했습니다</label></div>}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
           )}
-          {preview.normalCount > 0 && (
+          {preview.normalCount + preview.checkCount > 0 && (
             <>
               <div className="upload__top" style={{ marginTop: 12 }}>
                 <label className="field"><span>처리 종류</span>
@@ -632,7 +708,7 @@ function Retro({ yearId }: { yearId: number }) {
                 <label className="field" style={{ gridColumn: 'span 2' }}><span>사유 (필수)</span><input className="input" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="예: 5월 10일 대상자 확정에 따른 3~5월 소급" /></label>
               </div>
               <div className="row" style={{ marginTop: 10, justifyContent: 'flex-end' }}>
-                <span className="muted">선택 {chosen.length}건 · {won(chosenTotal)}원 → 환불 대상 {won(chosenTotal)}원 발생</span>
+                <span className="muted">선택 {chosen.length}건 · 전환 {won(chosenTotal)}원 → 환불 예정액 {won(chosenTotal)}원 (실제 수납 확인 뒤 환불 처리)</span>
                 <Button variant="primary" disabled={busy || chosen.length === 0 || !reason.trim()} onClick={() => setConfirming(true)}>승인 묶음 등록…</Button>
               </div>
             </>
@@ -659,6 +735,7 @@ function Refund({ yearId }: { yearId: number }) {
   const run = useRun()
   const list = useQuery({ queryKey: ['voucherRefunds', yearId], queryFn: () => api.voucherRefundList(yearId) })
   const [filter, setFilter] = useState('open')
+  const [fundFilter, setFundFilter] = useState('all')
   const [target, setTarget] = useState<VoucherRefundRow | null>(null)
   const [completing, setCompleting] = useState<{ row: VoucherRefundRow; id: number } | null>(null)
   const [cancelling, setCancelling] = useState<number | null>(null)
@@ -670,7 +747,8 @@ function Refund({ yearId }: { yearId: number }) {
   const [reason, setReason] = useState('')
   const [open, setOpen] = useState<number | null>(null)
 
-  const rows = (list.data ?? []).filter((r) => (filter === 'all' ? true : filter === 'open' ? r.status !== 'complete' && r.status !== 'cancelled' : r.status === filter))
+  const fundNames = Array.from(new Set((list.data ?? []).map((r) => r.fromFundName)))
+  const rows = (list.data ?? []).filter((r) => (filter === 'all' ? true : filter === 'open' ? r.status !== 'complete' && r.status !== 'cancelled' : r.status === filter)).filter((r) => fundFilter === 'all' || r.fromFundName === fundFilter)
   const openTotal = (list.data ?? []).filter((r) => r.status !== 'cancelled').reduce((s, r) => s + r.outstanding, 0)
 
   function startRegister(r: VoucherRefundRow) {
@@ -691,6 +769,12 @@ function Refund({ yearId }: { yearId: number }) {
               <option value="open">미처리·처리 예정·일부 완료</option><option value="all">전체</option><option value="none">미처리</option><option value="planned">처리 예정</option><option value="partial">일부 완료</option><option value="complete">처리 완료</option><option value="cancelled">취소</option>
             </select>
           </label>
+          <label className="field"><span>기존 재원</span>
+            <select className="select" value={fundFilter} onChange={(e) => setFundFilter(e.target.value)}>
+              <option value="all">전체</option>
+              {fundNames.map((f) => <option key={f} value={f}>{f} 환불</option>)}
+            </select>
+          </label>
           <span className="muted" style={{ alignSelf: 'flex-end' }}>환불은 자동으로 완료되지 않습니다. 완료 처리에는 실제 수납(학부모가 낸 돈) 근거 확인이 필요하며, 원장 징수액은 다시 차감되지 않습니다.</span>
         </div>
         {list.error && <Notice kind="bad">{errorMessage(list.error)}</Notice>}
@@ -704,7 +788,7 @@ function Refund({ yearId }: { yearId: number }) {
                   <>
                     <tr key={r.transferId} className={r.orphan ? 'row--error' : r.status === 'cancelled' ? 'row--off' : ''}>
                       <td>#{r.transferId}{r.fromBatch ? <span className="muted"> 묶음 {r.batchId}</span> : <span className="muted"> 직접</span>}{r.transferStatus !== 'done' ? <span className="badge badge--soon" style={{ marginLeft: 4 }}>{r.transferStatusLabel}</span> : null}{r.orphan && <span className="badge badge--bad" style={{ marginLeft: 4 }}>원본 재확인 필요</span>}</td>
-                      <td>{r.student}</td><td>{r.monthLabel}</td><td>{r.programName}</td><td>{r.itemName}</td><td>{r.fromFundName}</td>
+                      <td>{r.student}</td><td>{r.monthLabel}</td><td>{r.programName}</td><td>{r.itemName}</td><td><span className={r.fromFundName === '초3 초과금' ? 'badge badge--navy' : 'badge badge--muted'}>{r.fromFundName} 환불</span></td>
                       <td className="num">{won(r.amount)}</td><td className="num">{won(r.returnedDone)}</td><td className="num">{won(r.returnedPlanned)}</td><td className="num"><strong>{won(r.outstanding)}</strong></td>
                       <td className="center"><span className={REFUND_CLS[r.status]}>{r.statusLabel}</span></td>
                       <td>

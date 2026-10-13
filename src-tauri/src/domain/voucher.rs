@@ -20,6 +20,19 @@ pub struct LimitSpec {
     pub s1: Option<i64>,
     pub s2: Option<i64>,
     pub carry_over: bool,
+    /// 회계월 차례(1=3월 … 12=2월)별 학기: 1 · 2 · 0(어느 학기에도 속하지 않는 미지원 기간). 길이 12.
+    pub semesters: Vec<i32>,
+}
+
+/// 기본 학기 구분: 1학기 3~8월(차례 1~6), 2학기 9~2월(차례 7~12).
+pub fn default_semesters() -> Vec<i32> {
+    (1..=12).map(|s| if s <= 6 { 1 } else { 2 }).collect()
+}
+
+impl LimitSpec {
+    pub fn semester(&self, seq: i32) -> i32 {
+        self.semesters.get((seq - 1).max(0) as usize).copied().unwrap_or_else(|| semester_of(seq))
+    }
 }
 
 /// 한 달·한 프로그램·한 항목의 수강료(징수 기준액 합).
@@ -96,13 +109,16 @@ pub fn plan(spec: &LimitSpec, prior_used: i64, prior_seq: i32, window: (i32, i32
         _ => None,
     };
     let mut rem_annual = (annual - prior).max(0);
-    let mut rem1 = if semester_of(prior_seq) == 1 { (s1 - prior).max(0) } else { s1 };
-    let mut rem2 = if semester_of(prior_seq) == 2 { (s2 - prior).max(0) } else { s2 };
+    let prior_sem = spec.semester(prior_seq);
+    let mut rem1 = if prior_sem == 1 { (s1 - prior).max(0) } else { s1 };
+    let mut rem2 = if prior_sem == 2 { (s2 - prior).max(0) } else { s2 };
     if !unlimited && prior > 0 {
-        out.notes.push(format!("이전 학교 사용액 {}원을 {}에서 뺐습니다.", prior, if spec.basis == "annual" { "연간 한도".to_string() } else { format!("{}학기 한도", semester_of(prior_seq)) }));
+        out.notes.push(format!("이전 학교 사용액 {}원을 {}에서 뺐습니다.", prior, if spec.basis == "annual" { "연간 한도".to_string() } else { format!("{}학기 한도", prior_sem.max(1)) }));
     }
-    let carry = spec.basis == "semester" && spec.carry_over && window.0 <= 6;
+    // 이월은 적용 기간이 1학기 달을 하나라도 포함할 때만
+    let carry = spec.basis == "semester" && spec.carry_over && (window.0..=window.1).any(|s| spec.semester(s) == 1);
     let mut carried = false;
+    let mut uncovered_noted = false;
     let mut i = 0;
     while i < cs.len() {
         let seq = cs[i].seq;
@@ -119,10 +135,23 @@ pub fn plan(spec: &LimitSpec, prior_used: i64, prior_seq: i32, window: (i32, i32
             i = j;
             continue;
         }
+        let sem = if spec.basis == "semester" { spec.semester(seq) } else { 1 };
+        if sem == 0 {
+            // 어느 학기에도 속하지 않는 달 — 미지원 기간. 임의로 어느 학기에 넣지 않는다.
+            if !uncovered_noted {
+                out.notes.push("학기 기간에 속하지 않는 달은 미지원 기간으로 보아 지원액을 계산하지 않았습니다.".into());
+                uncovered_noted = true;
+            }
+            for c in group {
+                out.rows.push(PlanRow { seq, program_id: c.program_id, item_id: c.item_id, tuition: c.tuition.max(0), free_expected: 0, remaining_before: None, remaining_after: None, needs_decision: false, decided: false });
+            }
+            i = j;
+            continue;
+        }
         let rem: &mut i64 = match spec.basis.as_str() {
             "annual" => &mut rem_annual,
             _ => {
-                if semester_of(seq) == 1 {
+                if sem == 1 {
                     &mut rem1
                 } else {
                     if carry && !carried {
@@ -200,14 +229,16 @@ pub fn plan(spec: &LimitSpec, prior_used: i64, prior_seq: i32, window: (i32, i32
                 out.remaining_end = Some(rem_annual);
             }
             _ => {
-                if carry && !carried && window.1 >= 7 {
+                let ends_in_s2 = (window.0..=window.1).any(|s| spec.semester(s) == 2);
+                if carry && !carried && ends_in_s2 {
                     rem2 += rem1;
-                    carried = true;
+                    if rem1 > 0 {
+                        out.notes.push(format!("1학기 잔액 {}원을 2학기로 이월했습니다.", rem1));
+                    }
                 }
                 out.remaining_s1 = Some(rem1);
                 out.remaining_s2 = Some(rem2);
-                out.remaining_end = Some(if window.1 >= 7 { rem2 } else { rem1 });
-                let _ = carried;
+                out.remaining_end = Some(if ends_in_s2 { rem2 } else { rem1 });
             }
         }
     }
@@ -219,10 +250,10 @@ mod tests {
     use super::*;
 
     fn annual(limit: i64) -> LimitSpec {
-        LimitSpec { basis: "annual".into(), annual: Some(limit), s1: None, s2: None, carry_over: false }
+        LimitSpec { basis: "annual".into(), annual: Some(limit), s1: None, s2: None, carry_over: false, semesters: default_semesters() }
     }
     fn semester(s1: i64, s2: i64, carry: bool) -> LimitSpec {
-        LimitSpec { basis: "semester".into(), annual: None, s1: Some(s1), s2: Some(s2), carry_over: carry }
+        LimitSpec { basis: "semester".into(), annual: None, s1: Some(s1), s2: Some(s2), carry_over: carry, semesters: default_semesters() }
     }
     fn c(seq: i32, program: i64, tuition: i64) -> Charge {
         Charge { seq, program_id: program, item_id: 1, tuition }
@@ -260,7 +291,7 @@ mod tests {
 
     #[test]
     fn unlimited_never_converts() {
-        let spec = LimitSpec { basis: "unlimited".into(), annual: None, s1: None, s2: None, carry_over: false };
+        let spec = LimitSpec { basis: "unlimited".into(), annual: None, s1: None, s2: None, carry_over: false, semesters: default_semesters() };
         let charges = vec![c(1, 1, 900_000), c(2, 1, 900_000)];
         let p = plan(&spec, 0, 1, (1, 12), &charges, &[]);
         assert!(p.rows.iter().all(|r| r.free_expected == r.tuition && r.remaining_after.is_none()));
@@ -323,6 +354,25 @@ mod tests {
         let p = plan(&annual(500_000), 0, 1, (1, 12), &charges, &[]);
         assert!(p.needs_decision_seqs.is_empty());
         assert_eq!(p.rows.iter().map(|r| r.free_expected).sum::<i64>(), 70_000);
+    }
+
+    #[test]
+    fn custom_semester_ranges_and_uncovered_months() {
+        // 1학기 3~7월, 2학기 9~1월, 8월·2월은 미지원 기간
+        let mut sem = default_semesters();
+        sem[5] = 0; // 8월
+        sem[11] = 0; // 2월
+        let mut spec = semester(100_000, 100_000, true);
+        spec.semesters = sem;
+        let charges = vec![c(5, 1, 60_000), c(6, 1, 50_000), c(7, 1, 120_000), c(12, 1, 10_000)];
+        let p = plan(&spec, 0, 1, (1, 12), &charges, &[]);
+        assert_eq!(p.rows[0].free_expected, 60_000, "7월은 1학기");
+        assert_eq!(p.rows[1].free_expected, 0, "8월은 미지원 기간");
+        assert_eq!(p.rows[2].free_expected, 120_000, "9월: 2학기 100,000 + 1학기 잔액 40,000 이월");
+        assert_eq!(p.rows[3].free_expected, 0, "2월은 미지원 기간");
+        assert_eq!(p.remaining_end, Some(20_000));
+        assert!(p.notes.iter().any(|n| n.contains("미지원 기간")));
+        assert!(p.notes.iter().any(|n| n.contains("40000") || n.contains("40,000")));
     }
 
     #[test]

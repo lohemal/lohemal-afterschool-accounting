@@ -106,6 +106,7 @@ pub fn run() {
             commands::adjust::entry_picks,
             commands::voucher::voucher_policy_current,
             commands::voucher::voucher_policy_history,
+            commands::voucher::voucher_policy_preview,
             commands::voucher::voucher_policy_save,
             commands::voucher::voucher_exception_list,
             commands::voucher::voucher_exception_save,

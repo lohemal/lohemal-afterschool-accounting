@@ -685,6 +685,15 @@ export interface VoucherPolicy {
   semester1Limit: number | null
   semester2Limit: number | null
   carryOver: boolean
+  semester1From: string
+  semester1To: string
+  semester2From: string
+  semester2To: string
+  semesterDefault: boolean
+  uncoveredMonths: string[]
+  eligibleItemIds: number[]
+  eligibleItemNames: string[]
+  allItemsEligible: boolean
   note: string
   createdAt: string
   supersededAt: string | null
@@ -697,7 +706,26 @@ export interface VoucherPolicyInput {
   semester1Limit?: number | null
   semester2Limit?: number | null
   carryOver?: boolean
+  semester1From?: string | null
+  semester1To?: string | null
+  semester2From?: string | null
+  semester2To?: string | null
+  /** null = 모든 항목 지원 */
+  eligibleItemIds?: number[] | null
   note?: string
+}
+
+export interface VoucherPolicyPreview {
+  semester1From: string
+  semester1To: string
+  semester2From: string
+  semester2To: string
+  uncoveredMonths: string[]
+  eligibleItemNames: string[]
+  affectedTransferCount: number
+  affectedTransferTotal: number
+  warnings: string[]
+  blocked: string[]
 }
 
 export interface VoucherException {
@@ -801,7 +829,7 @@ export interface VoucherFundPart {
   amount: number
 }
 
-export type VoucherUsageState = 'ok' | 'retro' | 'over' | 'decide' | 'pending' | 'outside'
+export type VoucherUsageState = 'ok' | 'retro' | 'over' | 'decide' | 'pending' | 'outside' | 'excluded'
 
 export interface VoucherUsageRow {
   fiscalMonthId: number
@@ -815,8 +843,13 @@ export interface VoucherUsageRow {
   tuition: number
   freeActual: number
   beneficiaryActual: number
+  g3xActual: number
+  generalActual: number
+  voucherActual: number
   otherActual: number
   funds: VoucherFundPart[]
+  eligibleItem: boolean
+  semester: number
   freeExpected: number
   beneficiaryExpected: number
   pendingTransfer: number
@@ -827,6 +860,8 @@ export interface VoucherUsageRow {
   stateLabel: string
   inWindow: boolean
   monthClosed: boolean
+  retroG3x: number
+  retroGeneral: number
 }
 
 export interface VoucherUsage {
@@ -845,6 +880,12 @@ export interface VoucherUsage {
   priorUsed: number | null
   usedExpected: number
   usedActual: number
+  voucherTotal: number
+  g3xTotal: number
+  generalTotal: number
+  dual: boolean
+  eligibleItemNames: string[]
+  semesterLabel: string
   pendingTotal: number
   remaining: number | null
   remainingS1: number | null
@@ -860,7 +901,7 @@ export interface VoucherUsage {
   notes: string[]
 }
 
-export type VoucherProposalState = 'normal' | 'blocked' | 'decide' | 'pending' | 'over' | 'short'
+export type VoucherProposalState = 'normal' | 'check' | 'blocked' | 'decide' | 'pending' | 'over' | 'short'
 
 export interface VoucherProposal {
   key: string
@@ -877,6 +918,12 @@ export interface VoucherProposal {
   amount: number
   state: VoucherProposalState
   stateLabel: string
+  voucherActual: number
+  g3xActual: number
+  generalActual: number
+  freeActual: number
+  remainingAfter: number
+  limitAfter: number | null
   reasons: string[]
 }
 
@@ -885,6 +932,8 @@ export interface VoucherRetroPreview {
   proposals: VoucherProposal[]
   normalCount: number
   normalTotal: number
+  checkCount: number
+  checkTotal: number
   blockedCount: number
   studentCount: number
 }
@@ -896,6 +945,7 @@ export interface VoucherApplyRow {
   amountItemId: number
   fromFundId: number
   amount: number
+  confirmed?: boolean
 }
 
 export interface VoucherApplyInput {

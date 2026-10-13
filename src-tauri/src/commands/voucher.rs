@@ -16,6 +16,11 @@ pub fn voucher_policy_history(db: State<Db>, school_year_id: i64) -> AppResult<V
 }
 
 #[tauri::command]
+pub fn voucher_policy_preview(db: State<Db>, input: VoucherPolicyInput) -> AppResult<VoucherPolicyPreview> {
+    db.read(|c| voucher::policy_preview(c, &input))
+}
+
+#[tauri::command]
 pub fn voucher_policy_save(db: State<Db>, input: VoucherPolicyInput) -> AppResult<VoucherPolicy> {
     db.write(|tx| voucher::policy_save(tx, &input))
 }

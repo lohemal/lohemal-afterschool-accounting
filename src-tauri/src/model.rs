@@ -869,12 +869,24 @@ pub struct VoucherPolicy {
     pub semester1_limit: Option<i64>,
     pub semester2_limit: Option<i64>,
     pub carry_over: bool,
+    /// 학기 기간 (저장값이 없으면 기본값: 1학기 3/1~8/31 · 2학기 9/1~다음 해 2월 말)
+    pub semester1_from: String,
+    pub semester1_to: String,
+    pub semester2_from: String,
+    pub semester2_to: String,
+    pub semester_default: bool,
+    /// 어느 학기에도 들지 않는 회계월 (미지원 기간)
+    pub uncovered_months: Vec<String>,
+    /// 지원 대상 항목 id (비어 있으면 '설정 없음 = 모든 항목')
+    pub eligible_item_ids: Vec<i64>,
+    pub eligible_item_names: Vec<String>,
+    pub all_items_eligible: bool,
     pub note: String,
     pub created_at: String,
     pub superseded_at: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct VoucherPolicyInput {
     pub school_year_id: i64,
@@ -884,8 +896,32 @@ pub struct VoucherPolicyInput {
     pub semester2_limit: Option<i64>,
     #[serde(default)]
     pub carry_over: bool,
+    /// 비우면 기본값
+    pub semester1_from: Option<String>,
+    pub semester1_to: Option<String>,
+    pub semester2_from: Option<String>,
+    pub semester2_to: Option<String>,
+    /// None = 모든 항목 지원 (P4 호환). Some(빈 목록) 은 거부.
+    pub eligible_item_ids: Option<Vec<i64>>,
     #[serde(default)]
     pub note: String,
+}
+
+/// 정책 저장 전 영향 미리보기.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoucherPolicyPreview {
+    pub semester1_from: String,
+    pub semester1_to: String,
+    pub semester2_from: String,
+    pub semester2_to: String,
+    pub uncovered_months: Vec<String>,
+    pub eligible_item_names: Vec<String>,
+    /// 지원 대상에서 빠지는 항목에 이미 등록된(살아 있는) 자유수강권 경정
+    pub affected_transfer_count: i64,
+    pub affected_transfer_total: i64,
+    pub warnings: Vec<String>,
+    pub blocked: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1033,9 +1069,18 @@ pub struct VoucherUsageRow {
     /// 수강료(징수 기준액 합) = 자유수강권 + 수익자 + 기타
     pub tuition: i64,
     pub free_actual: i64,
+    /// 수익자 계열 합 = 초3 초과금 + 일반 수익자
     pub beneficiary_actual: i64,
+    pub g3x_actual: i64,
+    pub general_actual: i64,
+    /// 방과후이용권 (자유수강권 사용액에 넣지 않고 전환 대상도 아님)
+    pub voucher_actual: i64,
     pub other_actual: i64,
     pub funds: Vec<VoucherFundPart>,
+    /// 지원 대상 항목인가 (아니면 계산에서 제외, 기존 재원 유지)
+    pub eligible_item: bool,
+    /// 1 · 2 · 0(어느 학기에도 속하지 않음)
+    pub semester: i32,
     /// 계산 지원액 (적용 기간 밖이면 0)
     pub free_expected: i64,
     pub beneficiary_expected: i64,
@@ -1050,6 +1095,9 @@ pub struct VoucherUsageRow {
     pub state_label: String,
     pub in_window: bool,
     pub month_closed: bool,
+    /// 이 칸에서 전환 가능한 초3 초과금 · 일반 수익자 (delta 를 우선순위로 나눈 것)
+    pub retro_g3x: i64,
+    pub retro_general: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1071,6 +1119,14 @@ pub struct VoucherUsage {
     pub prior_used: Option<i64>,
     pub used_expected: i64,
     pub used_actual: i64,
+    /// 방과후이용권 사용액 (별도 집계, 자유수강권에 포함하지 않음)
+    pub voucher_total: i64,
+    pub g3x_total: i64,
+    pub general_total: i64,
+    /// 방과후이용권과 자유수강권 중복 대상자 (이용권 실적이 있음)
+    pub dual: bool,
+    pub eligible_item_names: Vec<String>,
+    pub semester_label: String,
     pub pending_total: i64,
     pub remaining: Option<i64>,
     pub remaining_s1: Option<i64>,
@@ -1101,8 +1157,16 @@ pub struct VoucherProposal {
     pub from_fund_id: Option<i64>,
     pub from_fund_name: String,
     pub amount: i64,
-    /// normal · blocked · decide · pending · over · short
+    /// normal · check(재원 확인 필요 — 담당자 확인 뒤 등록 가능) · blocked · decide · pending · over · short
     pub state: String,
+    /// 이 칸의 기존 재원 구성 (이용권 · 초3 초과금 · 일반 수익자 · 자유수강권)
+    pub voucher_actual: i64,
+    pub g3x_actual: i64,
+    pub general_actual: i64,
+    pub free_actual: i64,
+    /// 전환 뒤 그 재원에 남는 수익자 부담금
+    pub remaining_after: i64,
+    pub limit_after: Option<i64>,
     pub state_label: String,
     pub reasons: Vec<String>,
 }
@@ -1114,6 +1178,8 @@ pub struct VoucherRetroPreview {
     pub proposals: Vec<VoucherProposal>,
     pub normal_count: i64,
     pub normal_total: i64,
+    pub check_count: i64,
+    pub check_total: i64,
     pub blocked_count: i64,
     pub student_count: i64,
 }
@@ -1127,6 +1193,9 @@ pub struct VoucherApplyRow {
     pub amount_item_id: i64,
     pub from_fund_id: i64,
     pub amount: i64,
+    /// '재원 확인 필요' 행을 담당자가 확인했다는 표시
+    #[serde(default)]
+    pub confirmed: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

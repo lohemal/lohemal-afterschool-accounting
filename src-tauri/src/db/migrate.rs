@@ -66,6 +66,13 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../migrations/006_voucher.sql"),
         fk_off: false,
     },
+    // 정책에 학기 기간 칸을 더하고 지원 대상 항목 표를 만든다. 기존 행 보존.
+    Migration {
+        version: 7,
+        name: "007_voucher_policy",
+        sql: include_str!("../../migrations/007_voucher_policy.sql"),
+        fk_off: false,
+    },
 ];
 
 pub fn latest_version() -> i32 {
@@ -287,7 +294,7 @@ mod tests {
             "school_year", "fiscal_month", "fund_type", "fund_type_alias", "amount_item", "program", "program_alias",
             "program_group", "program_group_member", "student", "upload_file", "upload_row", "upload_apply",
             "source_row", "ledger_entry", "ledger_correction", "month_close", "audit_log", "app_setting", "allocation", "recon_note", "adjustment", "adjustment_entry", "adjustment_status_log",
-            "voucher_policy", "voucher_exception", "voucher_target", "voucher_target_log", "voucher_batch", "voucher_batch_item", "voucher_refund",
+            "voucher_policy", "voucher_exception", "voucher_target", "voucher_target_log", "voucher_batch", "voucher_batch_item", "voucher_refund", "voucher_policy_item",
         ] {
             assert!(names.iter().any(|n| n == t), "표 {t} 가 없다: {names:?}");
         }

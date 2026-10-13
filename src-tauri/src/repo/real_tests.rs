@@ -190,7 +190,7 @@ fn real_september_recon() {
     // ── P4 연동: 실제 자료에는 학생 식별 정보가 비어 있어 학생 단위 대상자를 만들 수 없다.
     //    자유수강권 모듈이 실제 DB 상태 위에서 깨지지 않는지, 프로그램 단위 경정이 환불 대상으로 섞이지 않는지만 확인한다.
     println!("\n## P4 — 자유수강권 모듈 (실제 9월 자료 위, 학생 정보 없음)");
-    let pol = t.db.write(|tx| voucher::policy_save(tx, &crate::model::VoucherPolicyInput { school_year_id: t.year_id, basis: "annual".into(), annual_limit: Some(600_000), semester1_limit: None, semester2_limit: None, carry_over: false, note: "시험".into() })).unwrap();
+    let pol = t.db.write(|tx| voucher::policy_save(tx, &crate::model::VoucherPolicyInput { school_year_id: t.year_id, basis: "annual".into(), annual_limit: Some(600_000), semester1_limit: None, semester2_limit: None, carry_over: false, note: "시험".into(), ..Default::default() })).unwrap();
     println!("정책 등록: {} (연간 {})", pol.basis_label, w(pol.annual_limit.unwrap()));
     let targets = t.db.read(|c| voucher::target_list(c, t.year_id)).unwrap();
     let students = t.db.read(|c| adjustment::students(c, t.year_id)).unwrap();

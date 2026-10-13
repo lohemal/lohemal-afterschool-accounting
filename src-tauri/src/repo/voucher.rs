@@ -15,7 +15,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::domain::money::format_won as w;
 use crate::domain::months;
-use crate::domain::voucher::{self as engine, Charge, Decision, LimitSpec};
+use crate::domain::voucher::{self as engine, default_semesters, Charge, Decision, LimitSpec};
 use crate::error::{AppError, AppResult};
 use crate::model::*;
 use crate::repo::{adjustment, audit, catalog, recon, year};
@@ -73,6 +73,7 @@ fn usage_state_label(s: &str) -> &'static str {
         "decide" => "배분 결정 필요",
         "pending" => "처리 예정 경정 있음",
         "outside" => "적용 기간 밖",
+        "excluded" => "지원 대상 항목 아님",
         _ => "",
     }
 }
@@ -133,10 +134,11 @@ fn limit_label(basis: &str, annual: Option<i64>, s1: Option<i64>, s2: Option<i64
 
 // ── 정책 ─────────────────────────────────────────────────────────────────
 
-const POLICY_COLS: &str = "id, school_year_id, basis, annual_limit, semester1_limit, semester2_limit, carry_over, note, created_at, superseded_at";
+const POLICY_COLS: &str = "id, school_year_id, basis, annual_limit, semester1_limit, semester2_limit, carry_over, note, created_at, superseded_at, semester1_from, semester1_to, semester2_from, semester2_to";
 
 fn map_policy(r: &rusqlite::Row) -> rusqlite::Result<VoucherPolicy> {
     let basis: String = r.get(2)?;
+    let d: [Option<String>; 4] = [r.get(10)?, r.get(11)?, r.get(12)?, r.get(13)?];
     Ok(VoucherPolicy {
         id: r.get(0)?,
         school_year_id: r.get(1)?,
@@ -146,28 +148,225 @@ fn map_policy(r: &rusqlite::Row) -> rusqlite::Result<VoucherPolicy> {
         semester1_limit: r.get(4)?,
         semester2_limit: r.get(5)?,
         carry_over: r.get::<_, i64>(6)? == 1,
+        semester_default: d.iter().all(|x| x.is_none()),
+        semester1_from: d[0].clone().unwrap_or_default(),
+        semester1_to: d[1].clone().unwrap_or_default(),
+        semester2_from: d[2].clone().unwrap_or_default(),
+        semester2_to: d[3].clone().unwrap_or_default(),
+        uncovered_months: vec![],
+        eligible_item_ids: vec![],
+        eligible_item_names: vec![],
+        all_items_eligible: true,
         note: r.get(7)?,
         created_at: r.get(8)?,
         superseded_at: r.get(9)?,
     })
 }
 
+/// 기본 학기 기간: 1학기 3/1~8/31 · 2학기 9/1~다음 해 2월 말일.
+pub fn default_semester_dates(year: i32) -> [String; 4] {
+    let feb_end = chrono::NaiveDate::from_ymd_opt(year + 1, 3, 1)
+        .and_then(|d| d.pred_opt())
+        .map(|d| d.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| format!("{}-02-28", year + 1));
+    [format!("{year}-03-01"), format!("{year}-08-31"), format!("{year}-09-01"), feb_end]
+}
+
+/// 회계월(차례순)마다 학기 번호. 날짜는 달 단위로 비교한다. 어느 학기에도 들지 않으면 0.
+fn semesters_for(months: &[MonthRef], d: &[String; 4]) -> Vec<i32> {
+    let ym = |s: &str| s.get(0..7).unwrap_or("").to_string();
+    let (a, b, c, e) = (ym(&d[0]), ym(&d[1]), ym(&d[2]), ym(&d[3]));
+    months
+        .iter()
+        .map(|m| {
+            if !a.is_empty() && m.ym >= a && m.ym <= b {
+                1
+            } else if !c.is_empty() && m.ym >= c && m.ym <= e {
+                2
+            } else {
+                0
+            }
+        })
+        .collect()
+}
+
+fn month_labels(months: &[MonthRef], pick: impl Fn(usize) -> bool) -> Vec<String> {
+    months.iter().enumerate().filter(|(i, _)| pick(*i)).map(|(_, m)| format!("{} ({})", months::label(&m.ym), m.ym)).collect()
+}
+
+/// 정책 행에 기본값·학기 공백·지원 대상 항목을 채운다.
+fn fill_policy(conn: &Connection, p: &mut VoucherPolicy) -> AppResult<()> {
+    let y = year::get(conn, p.school_year_id)?;
+    let def = default_semester_dates(y.year);
+    for (i, slot) in [&mut p.semester1_from, &mut p.semester1_to, &mut p.semester2_from, &mut p.semester2_to].into_iter().enumerate() {
+        if slot.is_empty() {
+            *slot = def[i].clone();
+        }
+    }
+    let months = months_of_year(conn, p.school_year_id)?;
+    let sems = semesters_for(&months, &[p.semester1_from.clone(), p.semester1_to.clone(), p.semester2_from.clone(), p.semester2_to.clone()]);
+    p.uncovered_months = month_labels(&months, |i| sems[i] == 0);
+    let mut st = conn.prepare("SELECT i.id, i.name FROM voucher_policy_item x JOIN amount_item i ON i.id = x.amount_item_id WHERE x.policy_id = ?1 AND x.eligible = 1 ORDER BY i.sort_order")?;
+    let rows: Vec<(i64, String)> = st.query_map([p.id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?;
+    let any: i64 = conn.query_row("SELECT count(*) FROM voucher_policy_item WHERE policy_id = ?1", [p.id], |r| r.get(0))?;
+    if any == 0 {
+        p.all_items_eligible = true;
+        p.eligible_item_ids = vec![];
+        p.eligible_item_names = catalog::amount_items(conn)?.iter().filter(|i| i.is_active).map(|i| i.name.clone()).collect();
+    } else {
+        p.all_items_eligible = false;
+        p.eligible_item_ids = rows.iter().map(|x| x.0).collect();
+        p.eligible_item_names = rows.into_iter().map(|x| x.1).collect();
+    }
+    Ok(())
+}
+
+pub fn policy_get(conn: &Connection, id: i64) -> AppResult<VoucherPolicy> {
+    let mut p = conn.query_row(&format!("SELECT {POLICY_COLS} FROM voucher_policy WHERE id = ?1"), [id], map_policy)?;
+    fill_policy(conn, &mut p)?;
+    Ok(p)
+}
+
 pub fn policy_current(conn: &Connection, school_year_id: i64) -> AppResult<Option<VoucherPolicy>> {
-    Ok(conn
+    let p = conn
         .query_row(&format!("SELECT {POLICY_COLS} FROM voucher_policy WHERE school_year_id = ?1 AND superseded_at IS NULL"), [school_year_id], map_policy)
-        .optional()?)
+        .optional()?;
+    match p {
+        Some(mut p) => {
+            fill_policy(conn, &mut p)?;
+            Ok(Some(p))
+        }
+        None => Ok(None),
+    }
 }
 
 pub fn policy_history(conn: &Connection, school_year_id: i64) -> AppResult<Vec<VoucherPolicy>> {
     let mut st = conn.prepare(&format!("SELECT {POLICY_COLS} FROM voucher_policy WHERE school_year_id = ?1 ORDER BY id DESC"))?;
-    let rows: Vec<VoucherPolicy> = st.query_map([school_year_id], map_policy)?.collect::<Result<_, _>>()?;
+    let mut rows: Vec<VoucherPolicy> = st.query_map([school_year_id], map_policy)?.collect::<Result<_, _>>()?;
+    for p in rows.iter_mut() {
+        fill_policy(conn, p)?;
+    }
     Ok(rows)
 }
 
-/// 정책 저장 — 이전 정책은 닫고(superseded_at) 새 행을 넣는다. 이력은 남는다.
+fn resolve_dates(conn: &Connection, input: &VoucherPolicyInput) -> AppResult<([String; 4], [Option<String>; 4])> {
+    let y = year::get(conn, input.school_year_id)?;
+    let def = default_semester_dates(y.year);
+    let given = [blank(&input.semester1_from), blank(&input.semester1_to), blank(&input.semester2_from), blank(&input.semester2_to)];
+    let mut eff = def.clone();
+    for i in 0..4 {
+        if let Some(v) = &given[i] {
+            eff[i] = v.clone();
+        }
+    }
+    Ok((eff, given))
+}
+
+fn validate_dates(conn: &Connection, school_year_id: i64, d: &[String; 4]) -> Vec<String> {
+    let mut out = Vec::new();
+    for (label, v) in [("1학기 시작일", &d[0]), ("1학기 종료일", &d[1]), ("2학기 시작일", &d[2]), ("2학기 종료일", &d[3])] {
+        if chrono::NaiveDate::parse_from_str(v, "%Y-%m-%d").is_err() {
+            out.push(format!("{label}은(는) YYYY-MM-DD 형식이어야 합니다."));
+        }
+    }
+    if !out.is_empty() {
+        return out;
+    }
+    if d[0] > d[1] {
+        out.push("1학기 시작일이 종료일보다 늦습니다.".into());
+    }
+    if d[2] > d[3] {
+        out.push("2학기 시작일이 종료일보다 늦습니다.".into());
+    }
+    if !(d[1] < d[2] || d[3] < d[0]) {
+        out.push("1학기와 2학기 기간이 겹칩니다.".into());
+    }
+    if let Ok(y) = year::get(conn, school_year_id) {
+        for (label, v) in [("1학기 시작일", &d[0]), ("1학기 종료일", &d[1]), ("2학기 시작일", &d[2]), ("2학기 종료일", &d[3])] {
+            let ym = &v[0..7];
+            if ym < y.start_ym.as_str() || ym > y.end_ym.as_str() {
+                out.push(format!("{label}이(가) 학년도 범위({} ~ {}) 밖입니다.", y.start_ym, y.end_ym));
+            }
+        }
+    }
+    out
+}
+
+/// 저장 전 미리보기 — 차단 사유, 학기 공백, 지원 대상에서 빠지는 항목에 이미 등록된 경정.
+pub fn policy_preview(conn: &Connection, input: &VoucherPolicyInput) -> AppResult<VoucherPolicyPreview> {
+    let mut blocked = Vec::new();
+    let mut warnings = Vec::new();
+    if let Err(e) = validate_limits(&input.basis, input.annual_limit, input.semester1_limit, input.semester2_limit) {
+        blocked.push(e.message);
+    }
+    year::get(conn, input.school_year_id)?;
+    let (eff, _) = resolve_dates(conn, input)?;
+    blocked.extend(validate_dates(conn, input.school_year_id, &eff));
+    let months = months_of_year(conn, input.school_year_id)?;
+    let uncovered = if blocked.is_empty() { month_labels(&months, |i| semesters_for(&months, &eff)[i] == 0) } else { vec![] };
+    if input.basis == "semester" && !uncovered.is_empty() {
+        warnings.push(format!("{} 은(는) 어느 학기에도 속하지 않아 미지원 기간으로 봅니다 (어느 학기에도 임의로 넣지 않습니다).", uncovered.join(", ")));
+    }
+    let items = catalog::amount_items(conn)?;
+    let mut eligible_item_names: Vec<String> = Vec::new();
+    let mut affected_count = 0;
+    let mut affected_total = 0;
+    match &input.eligible_item_ids {
+        None => eligible_item_names = items.iter().filter(|i| i.is_active).map(|i| i.name.clone()).collect(),
+        Some(ids) => {
+            if ids.is_empty() {
+                blocked.push("지원 대상 항목을 하나 이상 골라 주세요.".into());
+            }
+            for id in ids {
+                match items.iter().find(|i| i.id == *id) {
+                    Some(i) => eligible_item_names.push(i.name.clone()),
+                    None => blocked.push(format!("금액 항목 #{id} 이(가) 없습니다.")),
+                }
+            }
+            let idx = recon::FundIndex::load(conn)?;
+            let free = free_fund_id(conn, &idx)?;
+            let mut st = conn.prepare(
+                "SELECT amount_item_id, to_fund_id, amount FROM adjustment WHERE school_year_id = ?1 AND kind = 'fund_transfer' AND status <> 'cancelled' AND student_id IS NOT NULL",
+            )?;
+            let rows: Vec<(i64, i64, i64)> = st.query_map([input.school_year_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<Result<_, _>>()?;
+            for (item, to, amount) in rows {
+                if idx.effective(to) == free && !ids.contains(&item) {
+                    affected_count += 1;
+                    affected_total += amount;
+                }
+            }
+            if affected_count > 0 {
+                warnings.push(format!(
+                    "지원 대상에서 빠지는 항목에 이미 등록된 자유수강권 경정 {}건 {}원이 있습니다. 완료된 경정은 자동으로 취소·수정하지 않습니다 — 필요하면 회계 정정에서 담당자가 처리합니다.",
+                    affected_count, w(affected_total)
+                ));
+            }
+        }
+    }
+    if policy_current(conn, input.school_year_id)?.is_some() {
+        warnings.push("정책을 바꾸면 이후 사용액 계산은 새 정책으로 다시 계산됩니다. 이미 등록된 경정·환불은 바뀌지 않고, 이전 정책은 이력으로 남습니다.".into());
+    }
+    Ok(VoucherPolicyPreview {
+        semester1_from: eff[0].clone(),
+        semester1_to: eff[1].clone(),
+        semester2_from: eff[2].clone(),
+        semester2_to: eff[3].clone(),
+        uncovered_months: uncovered,
+        eligible_item_names,
+        affected_transfer_count: affected_count,
+        affected_transfer_total: affected_total,
+        warnings,
+        blocked,
+    })
+}
+
+/// 정책 저장 — 이전 정책은 닫고(superseded_at) 새 행을 넣는다. 학기 기간·지원 대상 항목은 정책 판과 함께 남는다.
 pub fn policy_save(tx: &Connection, input: &VoucherPolicyInput) -> AppResult<VoucherPolicy> {
-    validate_limits(&input.basis, input.annual_limit, input.semester1_limit, input.semester2_limit)?;
-    year::get(tx, input.school_year_id)?;
+    let pv = policy_preview(tx, input)?;
+    if !pv.blocked.is_empty() {
+        return Err(AppError::invalid(pv.blocked.join(" / ")));
+    }
+    let (_, given) = resolve_dates(tx, input)?;
     let (annual, s1, s2, carry) = match input.basis.as_str() {
         "annual" => (input.annual_limit, None, None, false),
         "semester" => (None, input.semester1_limit, input.semester2_limit, input.carry_over),
@@ -179,19 +378,25 @@ pub fn policy_save(tx: &Connection, input: &VoucherPolicyInput) -> AppResult<Vou
         [input.school_year_id],
     )?;
     tx.execute(
-        "INSERT INTO voucher_policy (school_year_id, basis, annual_limit, semester1_limit, semester2_limit, carry_over, note) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![input.school_year_id, input.basis, annual, s1, s2, carry as i64, input.note.trim()],
+        "INSERT INTO voucher_policy (school_year_id, basis, annual_limit, semester1_limit, semester2_limit, carry_over, note, semester1_from, semester1_to, semester2_from, semester2_to)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![input.school_year_id, input.basis, annual, s1, s2, carry as i64, input.note.trim(), given[0], given[1], given[2], given[3]],
     )?;
     let id = tx.last_insert_rowid();
+    if let Some(ids) = &input.eligible_item_ids {
+        for item in catalog::amount_items(tx)? {
+            tx.execute("INSERT INTO voucher_policy_item (policy_id, amount_item_id, eligible) VALUES (?1, ?2, ?3)", params![id, item.id, ids.contains(&item.id) as i64])?;
+        }
+    }
     audit::write(
         tx,
         "voucher.policy",
         "voucher_policy",
         Some(id),
-        &format!("자유수강권 한도 정책 {}: {}", if prev.is_some() { "변경" } else { "등록" }, limit_label(&input.basis, annual, s1, s2, carry)),
-        serde_json::json!({ "previous": prev.map(|p| p.id) }),
+        &format!("자유수강권 한도 정책 {}: {} · 지원 항목 {}", if prev.is_some() { "변경" } else { "등록" }, limit_label(&input.basis, annual, s1, s2, carry), pv.eligible_item_names.join("·")),
+        serde_json::json!({ "previous": prev.map(|p| p.id), "semesters": [pv.semester1_from, pv.semester1_to, pv.semester2_from, pv.semester2_to] }),
     )?;
-    Ok(tx.query_row(&format!("SELECT {POLICY_COLS} FROM voucher_policy WHERE id = ?1"), [id], map_policy)?)
+    policy_get(tx, id)
 }
 
 // ── 학생 예외 ─────────────────────────────────────────────────────────────
@@ -565,24 +770,44 @@ struct Limits {
     spec: LimitSpec,
     source: String,
     label: String,
+    /// None = 모든 항목 지원
+    eligible: Option<Vec<i64>>,
+    eligible_names: Vec<String>,
+    semester_label: String,
+    uncovered: Vec<String>,
 }
 
 fn limits_for(conn: &Connection, school_year_id: i64, student_id: i64) -> AppResult<Option<Limits>> {
-    if let Some(x) = exception_current(conn, student_id)? {
-        return Ok(Some(Limits {
-            label: limit_label(&x.basis, x.annual_limit, x.semester1_limit, x.semester2_limit, x.carry_over),
-            spec: LimitSpec { basis: x.basis, annual: x.annual_limit, s1: x.semester1_limit, s2: x.semester2_limit, carry_over: x.carry_over },
-            source: "학생 예외".into(),
-        }));
+    let pol = policy_current(conn, school_year_id)?;
+    let exc = exception_current(conn, student_id)?;
+    if pol.is_none() && exc.is_none() {
+        return Ok(None);
     }
-    if let Some(p) = policy_current(conn, school_year_id)? {
-        return Ok(Some(Limits {
-            label: limit_label(&p.basis, p.annual_limit, p.semester1_limit, p.semester2_limit, p.carry_over),
-            spec: LimitSpec { basis: p.basis, annual: p.annual_limit, s1: p.semester1_limit, s2: p.semester2_limit, carry_over: p.carry_over },
-            source: "학년도 정책".into(),
-        }));
-    }
-    Ok(None)
+    let months = months_of_year(conn, school_year_id)?;
+    let (semesters, eligible, eligible_names, semester_label, uncovered) = match &pol {
+        Some(p) => (
+            semesters_for(&months, &[p.semester1_from.clone(), p.semester1_to.clone(), p.semester2_from.clone(), p.semester2_to.clone()]),
+            if p.all_items_eligible { None } else { Some(p.eligible_item_ids.clone()) },
+            p.eligible_item_names.clone(),
+            format!("1학기 {} ~ {} · 2학기 {} ~ {}", p.semester1_from, p.semester1_to, p.semester2_from, p.semester2_to),
+            p.uncovered_months.clone(),
+        ),
+        None => (default_semesters(), None, catalog::amount_items(conn)?.iter().filter(|i| i.is_active).map(|i| i.name.clone()).collect(), "기본 학기 구분".into(), vec![]),
+    };
+    let (basis, annual, s1, s2, carry, source) = match (&exc, &pol) {
+        (Some(x), _) => (x.basis.clone(), x.annual_limit, x.semester1_limit, x.semester2_limit, x.carry_over, "학생 예외"),
+        (None, Some(p)) => (p.basis.clone(), p.annual_limit, p.semester1_limit, p.semester2_limit, p.carry_over, "학년도 정책"),
+        _ => unreachable!(),
+    };
+    Ok(Some(Limits {
+        label: limit_label(&basis, annual, s1, s2, carry),
+        spec: LimitSpec { basis, annual, s1, s2, carry_over: carry, semesters },
+        source: source.into(),
+        eligible,
+        eligible_names,
+        semester_label,
+        uncovered,
+    }))
 }
 
 fn free_fund_id(conn: &Connection, idx: &recon::FundIndex) -> AppResult<i64> {
@@ -619,6 +844,12 @@ pub fn usage(conn: &Connection, school_year_id: i64, student_id: i64, decisions:
         prior_used: target.as_ref().and_then(|t| t.prior_used),
         used_expected: 0,
         used_actual: 0,
+        voucher_total: 0,
+        g3x_total: 0,
+        general_total: 0,
+        dual: false,
+        eligible_item_names: vec![],
+        semester_label: String::new(),
         pending_total: 0,
         remaining: None,
         remaining_s1: None,
@@ -636,12 +867,19 @@ pub fn usage(conn: &Connection, school_year_id: i64, student_id: i64, decisions:
     if unallocated != 0 {
         out.warnings.push(format!("프로그램에 배분되지 않은 징수액 {}원은 계산에서 빠졌습니다. 징수액 배분을 먼저 확정해 주세요.", w(unallocated)));
     }
+    let g3x = idx.effective(catalog::fund_type_by_code(conn, "g3_excess")?.id);
+    let av = idx.effective(catalog::fund_type_by_code(conn, "after_voucher")?.id);
     let limits = limits_for(conn, school_year_id, student_id)?;
     if let Some(l) = &limits {
         out.basis = l.spec.basis.clone();
         out.basis_label = basis_label(&l.spec.basis).into();
         out.limit_source = l.source.clone();
         out.limit_label = l.label.clone();
+        out.eligible_item_names = l.eligible_names.clone();
+        out.semester_label = l.semester_label.clone();
+        if l.spec.basis == "semester" && !l.uncovered.is_empty() {
+            out.notes.push(format!("{} 은(는) 어느 학기에도 속하지 않는 미지원 기간입니다.", l.uncovered.join(", ")));
+        }
     } else {
         out.blocked.push("지원 한도 정책이 없습니다. '지원 한도 설정'에서 학년도 정책을 먼저 등록해 주세요.".into());
     }
@@ -676,12 +914,15 @@ pub fn usage(conn: &Connection, school_year_id: i64, student_id: i64, decisions:
         },
     }
     // 실제 사용액은 차단과 상관없이 보여 준다 (원장 사실).
+    let eligible_item = |item: i64| limits.as_ref().and_then(|l| l.eligible.as_ref()).map(|ids| ids.contains(&item)).unwrap_or(true);
     let mut rows: Vec<VoucherUsageRow> = Vec::new();
     let plan = match (&limits, window) {
         (Some(l), Some(win)) if out.blocked.is_empty() => {
-            // 지원 대상 수강료 = 자유수강권 + 수익자 부담분. 다른 지원 재원(맞춤형지원·이용권 등)이 낸 몫은 한도를 쓰지 않는다.
+            // 지원 대상 수강료 = 자유수강권 + 수익자 계열(초3 초과금·일반 수익자). 방과후이용권·맞춤형지원 등 다른 지원 재원이 낸 몫은
+            // 한도를 쓰지 않고 자유수강권으로 바꾸지도 않는다. 지원 대상이 아닌 항목은 계산에서 뺀다.
             let charges: Vec<Charge> = cells
                 .iter()
+                .filter(|c| eligible_item(c.item_id))
                 .map(|c| Charge { seq: c.seq, program_id: c.program_id, item_id: c.item_id, tuition: c.by_fund.iter().filter(|(f, _)| **f == free || idx.root(**f) == ben_root).map(|x| x.1).sum() })
                 .collect();
             let ds: Vec<Decision> = decisions
@@ -693,18 +934,25 @@ pub fn usage(conn: &Connection, school_year_id: i64, student_id: i64, decisions:
         }
         _ => None,
     };
+    let semesters: Vec<i32> = limits.as_ref().map(|l| l.spec.semesters.clone()).unwrap_or_else(default_semesters);
     for c in &cells {
         let tuition: i64 = c.by_fund.values().sum();
         let free_actual = c.by_fund.get(&free).copied().unwrap_or(0);
-        let beneficiary_actual: i64 = c.by_fund.iter().filter(|(f, _)| **f != free && idx.root(**f) == ben_root).map(|x| x.1).sum();
-        let other_actual = tuition - free_actual - beneficiary_actual;
+        let g3x_actual = c.by_fund.get(&g3x).copied().unwrap_or(0);
+        let general_actual: i64 = c.by_fund.iter().filter(|(f, _)| **f != free && **f != g3x && idx.root(**f) == ben_root).map(|x| x.1).sum();
+        let beneficiary_actual = g3x_actual + general_actual;
+        let voucher_actual = c.by_fund.get(&av).copied().unwrap_or(0);
+        let other_actual = tuition - free_actual - beneficiary_actual - voucher_actual;
         let funds: Vec<VoucherFundPart> = c.by_fund.iter().map(|(f, a)| VoucherFundPart { fund_id: *f, fund_name: idx.name(*f), amount: *a }).collect();
         let pend = pending.get(&(c.month_id, c.program_id, c.item_id)).copied().unwrap_or(0);
         let in_window = window.map(|(f, t)| c.seq >= f && c.seq <= t).unwrap_or(false);
+        let elig = eligible_item(c.item_id);
         let pr = plan.as_ref().and_then(|p| p.rows.iter().find(|r| r.seq == c.seq && r.program_id == c.program_id && r.item_id == c.item_id));
         let free_expected = pr.map(|r| r.free_expected).unwrap_or(0);
         let delta = free_expected - free_actual - pend;
-        let state = if plan.is_none() {
+        let state = if !elig {
+            "excluded"
+        } else if plan.is_none() {
             if free_actual > 0 && !in_window && window.is_some() { "over" } else { "outside" }
         } else if !in_window {
             if free_actual > 0 { "over" } else { "outside" }
@@ -719,6 +967,13 @@ pub fn usage(conn: &Connection, school_year_id: i64, student_id: i64, decisions:
         } else {
             "ok"
         };
+        // 전환 우선순위: 초3 초과금 → 일반 수익자. 이용권 지원액은 전환 대상이 아니다.
+        let (retro_g3x, retro_general) = if state == "retro" {
+            let a = delta.min(g3x_actual.max(0));
+            (a, (delta - a).min(general_actual.max(0)).max(0))
+        } else {
+            (0, 0)
+        };
         rows.push(VoucherUsageRow {
             fiscal_month_id: c.month_id,
             ym: c.ym.clone(),
@@ -731,8 +986,13 @@ pub fn usage(conn: &Connection, school_year_id: i64, student_id: i64, decisions:
             tuition,
             free_actual,
             beneficiary_actual,
+            g3x_actual,
+            general_actual,
+            voucher_actual,
             other_actual,
             funds,
+            eligible_item: elig,
+            semester: semesters.get((c.seq - 1).max(0) as usize).copied().unwrap_or(0),
             free_expected,
             beneficiary_expected: ((free_actual + beneficiary_actual).max(0) - free_expected).max(0),
             pending_transfer: pend,
@@ -743,10 +1003,16 @@ pub fn usage(conn: &Connection, school_year_id: i64, student_id: i64, decisions:
             state_label: usage_state_label(state).into(),
             in_window,
             month_closed: months.iter().find(|m| m.id == c.month_id).map(|m| m.closed).unwrap_or(false),
+            retro_g3x,
+            retro_general,
         });
     }
     rows.sort_by_key(|r| (r.seq, r.program_name.clone(), r.amount_item_id));
     out.used_actual = rows.iter().map(|r| r.free_actual).sum();
+    out.voucher_total = rows.iter().map(|r| r.voucher_actual).sum();
+    out.g3x_total = rows.iter().map(|r| r.g3x_actual).sum();
+    out.general_total = rows.iter().map(|r| r.general_actual).sum();
+    out.dual = out.voucher_total > 0;
     out.pending_total = rows.iter().map(|r| r.pending_transfer).sum();
     out.used_expected = rows.iter().map(|r| r.free_expected).sum();
     out.retro_total = rows.iter().filter(|r| r.state == "retro").map(|r| r.delta).sum();
@@ -786,6 +1052,7 @@ pub fn usage_all(conn: &Connection, school_year_id: i64) -> AppResult<Vec<Vouche
 fn proposal_state_label(s: &str) -> &'static str {
     match s {
         "normal" => "정상 (등록 가능)",
+        "check" => "재원 확인 필요",
         "blocked" => "차단",
         "decide" => "배분 결정 필요",
         "pending" => "처리 예정 경정 있음",
@@ -795,12 +1062,14 @@ fn proposal_state_label(s: &str) -> &'static str {
     }
 }
 
-/// 소급(또는 당월) 경정 미리보기 — 학생별 사용액을 계산해 '계산 지원액 − 실제 자유수강권' 만큼 수익자 → 자유수강권 경정을 제안한다.
+/// 소급(또는 당월) 경정 미리보기 — 학생별 사용액을 계산해 '계산 지원액 − 실제 자유수강권' 만큼 수익자 계열 → 자유수강권 경정을 제안한다.
+/// 우선순위: 초3 초과금 → 일반 수익자. 방과후이용권 중복 대상자의 일반 수익자 금액은 '재원 확인 필요'로 두고 담당자 확인 뒤에만 등록한다.
 /// 이미 자유수강권인 금액은 빼고, 처리 예정 경정은 중복으로 보지 않도록 뺀다. 등록은 하지 않는다.
 pub fn retro_preview(conn: &Connection, school_year_id: i64, student_ids: &[i64], decisions: &[VoucherDecision]) -> AppResult<VoucherRetroPreview> {
     let idx = recon::FundIndex::load(conn)?;
     let free = free_fund_id(conn, &idx)?;
     let ben_root = beneficiary_root(conn, &idx)?;
+    let g3x = idx.effective(catalog::fund_type_by_code(conn, "g3_excess")?.id);
     let ids: Vec<i64> = if student_ids.is_empty() {
         target_list(conn, school_year_id)?.into_iter().filter(|t| matches!(t.status.as_str(), "confirmed" | "ended")).map(|t| t.student_id).collect()
     } else {
@@ -826,13 +1095,20 @@ pub fn retro_preview(conn: &Connection, school_year_id: i64, student_ids: &[i64]
                 amount: 0,
                 state: String::new(),
                 state_label: String::new(),
+                voucher_actual: r.voucher_actual,
+                g3x_actual: r.g3x_actual,
+                general_actual: r.general_actual,
+                free_actual: r.free_actual,
+                remaining_after: 0,
+                limit_after: r.remaining_after,
                 reasons: vec![],
             };
             match r.state.as_str() {
                 "retro" => {
                     let mut left = r.delta;
+                    // 우선순위: 초3 초과금 먼저, 그 다음 일반 수익자(정렬 순)
                     let mut parts: Vec<&VoucherFundPart> = r.funds.iter().filter(|f| f.fund_id != free && idx.root(f.fund_id) == ben_root && f.amount > 0).collect();
-                    parts.sort_by_key(|f| idx.sort_key(f.fund_id));
+                    parts.sort_by_key(|f| (if f.fund_id == g3x { 0 } else { 1 }, idx.sort_key(f.fund_id)));
                     for f in parts {
                         if left <= 0 {
                             break;
@@ -858,7 +1134,16 @@ pub fn retro_preview(conn: &Connection, school_year_id: i64, student_ids: &[i64]
                             confirm_duplicate: false,
                         };
                         let p = adjustment::preview(conn, &input)?;
-                        let (state, reasons) = if p.blocked.is_empty() { ("normal", vec![]) } else { ("blocked", p.blocked.clone()) };
+                        let (state, mut reasons) = if p.blocked.is_empty() { ("normal", vec![]) } else { ("blocked", p.blocked.clone()) };
+                        let state = if state == "normal" && f.fund_id != g3x && u.dual {
+                            reasons.push("방과후이용권 중복 대상자의 일반 수익자 금액입니다. 같은 학생의 지원 대상 수강료이고 이용권·다른 지원 재원과 겹치지 않는지 확인한 뒤 '재원 확인'을 켜야 등록됩니다.".into());
+                            "check"
+                        } else {
+                            state
+                        };
+                        if f.fund_id == g3x && u.dual {
+                            reasons.push("방과후이용권 중복 대상자 — 초3 초과금을 우선 지원합니다.".into());
+                        }
                         proposals.push(VoucherProposal {
                             key: format!("{}-{}", base.key, f.fund_id),
                             from_fund_id: Some(f.fund_id),
@@ -866,6 +1151,7 @@ pub fn retro_preview(conn: &Connection, school_year_id: i64, student_ids: &[i64]
                             amount,
                             state: state.into(),
                             state_label: proposal_state_label(state).into(),
+                            remaining_after: f.amount - amount,
                             reasons,
                             ..base.clone()
                         });
@@ -879,7 +1165,7 @@ pub fn retro_preview(conn: &Connection, school_year_id: i64, student_ids: &[i64]
                             state: "short".into(),
                             state_label: proposal_state_label("short").into(),
                             reasons: vec![format!(
-                                "계산 지원액 중 {}원은 수익자 부담분이 없어 경정할 수 없습니다{}. 다른 지원 재원을 자유수강권으로 바꾸지 않습니다.",
+                                "계산 지원액 중 {}원은 수익자 부담분이 없어 경정할 수 없습니다{}. 방과후이용권 등 다른 지원 재원을 자유수강권으로 바꾸지 않습니다.",
                                 w(left),
                                 if others.is_empty() { String::new() } else { format!(" (다른 재원: {})", others.join(", ")) }
                             )],
@@ -897,11 +1183,13 @@ pub fn retro_preview(conn: &Connection, school_year_id: i64, student_ids: &[i64]
     }
     let normal_count = proposals.iter().filter(|p| p.state == "normal").count() as i64;
     let normal_total = proposals.iter().filter(|p| p.state == "normal").map(|p| p.amount).sum();
-    let blocked_count = proposals.iter().filter(|p| p.state != "normal").count() as i64;
-    Ok(VoucherRetroPreview { student_count: usages.len() as i64, usages, proposals, normal_count, normal_total, blocked_count })
+    let check_count = proposals.iter().filter(|p| p.state == "check").count() as i64;
+    let check_total = proposals.iter().filter(|p| p.state == "check").map(|p| p.amount).sum();
+    let blocked_count = proposals.iter().filter(|p| p.state != "normal" && p.state != "check").count() as i64;
+    Ok(VoucherRetroPreview { student_count: usages.len() as i64, usages, proposals, normal_count, normal_total, check_count, check_total, blocked_count })
 }
 
-/// 승인 묶음 등록 — 담당자가 고른 행만, 등록 직전에 다시 계산·검증한다. 하나라도 어긋나면 전부 되돌린다 (조용히 건너뛰지 않는다).
+/// 승인 묶음 등록/// 승인 묶음 등록 — 담당자가 고른 행만, 등록 직전에 다시 계산·검증한다. 하나라도 어긋나면 전부 되돌린다 (조용히 건너뛰지 않는다).
 pub fn apply(tx: &Connection, input: &VoucherApplyInput) -> AppResult<VoucherBatch> {
     if !matches!(input.kind.as_str(), "retro" | "monthly") {
         return Err(AppError::invalid("처리 종류가 올바르지 않습니다."));
@@ -923,6 +1211,7 @@ pub fn apply(tx: &Connection, input: &VoucherApplyInput) -> AppResult<VoucherBat
     let idx = recon::FundIndex::load(tx)?;
     let free = free_fund_id(tx, &idx)?;
     let ben_root = beneficiary_root(tx, &idx)?;
+    let g3x = idx.effective(catalog::fund_type_by_code(tx, "g3_excess")?.id);
     // 재검증: 학생별 사용액을 지금 다시 계산해 각 행이 '경정 필요' 금액 안에 있는지 본다.
     let mut by_student: BTreeMap<i64, Vec<&VoucherApplyRow>> = BTreeMap::new();
     for r in &input.rows {
@@ -937,6 +1226,8 @@ pub fn apply(tx: &Connection, input: &VoucherApplyInput) -> AppResult<VoucherBat
         }
         let mut used: BTreeMap<(i64, i64, i64), i64> = BTreeMap::new();
         let mut used_fund: BTreeMap<(i64, i64, i64, i64), i64> = BTreeMap::new();
+        let mut taken_g3x: BTreeMap<(i64, i64, i64), i64> = BTreeMap::new();
+        let mut taken_general: BTreeMap<(i64, i64, i64), i64> = BTreeMap::new();
         for r in rows {
             if r.amount <= 0 {
                 errors.push(format!("{}: 금액은 0원보다 커야 합니다.", u.student));
@@ -972,6 +1263,26 @@ pub fn apply(tx: &Connection, input: &VoucherApplyInput) -> AppResult<VoucherBat
                 continue;
             }
             *facc += r.amount;
+            if part.fund_id == g3x {
+                *taken_g3x.entry(key).or_default() += r.amount;
+            } else {
+                if u.dual && !r.confirmed {
+                    errors.push(format!("{} · {} · {}: 방과후이용권 중복 대상자의 일반 수익자 금액은 담당자가 '재원 확인'을 켜야 경정합니다.", u.student, cell.month_label, cell.program_name));
+                    continue;
+                }
+                *taken_general.entry(key).or_default() += r.amount;
+            }
+        }
+        // 우선순위: 초3 초과금을 다 쓰기 전에 일반 수익자를 전환하지 않는다.
+        for (key, gen) in &taken_general {
+            if *gen <= 0 {
+                continue;
+            }
+            let Some(cell) = u.rows.iter().find(|x| x.fiscal_month_id == key.0 && x.program_id == key.1 && x.amount_item_id == key.2) else { continue };
+            let need_g3x = cell.delta.min(cell.g3x_actual.max(0));
+            if taken_g3x.get(key).copied().unwrap_or(0) < need_g3x {
+                errors.push(format!("{} · {} · {}: 초3 초과금 {}원을 먼저 자유수강권으로 지원해야 합니다 (우선순위).", u.student, cell.month_label, cell.program_name, w(need_g3x)));
+            }
         }
     }
     if !errors.is_empty() {

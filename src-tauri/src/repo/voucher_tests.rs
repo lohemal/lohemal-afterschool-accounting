@@ -58,7 +58,7 @@ impl T {
         self.collect_for(self.stu, seq, self.coding, fund, amount)
     }
     fn policy(&self, basis: &str, annual: Option<i64>, s1: Option<i64>, s2: Option<i64>, carry: bool) -> VoucherPolicy {
-        self.db.write(|tx| policy_save(tx, &VoucherPolicyInput { school_year_id: self.year_id, basis: basis.into(), annual_limit: annual, semester1_limit: s1, semester2_limit: s2, carry_over: carry, note: String::new() })).unwrap()
+        self.db.write(|tx| policy_save(tx, &VoucherPolicyInput { school_year_id: self.year_id, basis: basis.into(), annual_limit: annual, semester1_limit: s1, semester2_limit: s2, carry_over: carry, ..Default::default() })).unwrap()
     }
     fn target_input(&self, stu: i64, status: &str, from: &str) -> VoucherTargetInput {
         VoucherTargetInput { school_year_id: self.year_id, student_id: stu, status: status.into(), confirmed_on: Some("2026-05-10".into()), apply_from: Some(from.into()), apply_to: None, transfer_in: false, transfer_in_on: None, note: String::new(), reason: "시험".into() }
@@ -73,7 +73,7 @@ impl T {
         self.db.read(|c| retro_preview(c, self.year_id, &[stu], &[])).unwrap()
     }
     fn apply_normal(&self, p: &VoucherRetroPreview, kind: &str, status: &str) -> AppResult<VoucherBatch> {
-        let rows: Vec<VoucherApplyRow> = p.proposals.iter().filter(|x| x.state == "normal").map(|x| VoucherApplyRow { student_id: x.student_id, fiscal_month_id: x.fiscal_month_id, program_id: x.program_id, amount_item_id: x.amount_item_id, from_fund_id: x.from_fund_id.unwrap(), amount: x.amount }).collect();
+        let rows: Vec<VoucherApplyRow> = p.proposals.iter().filter(|x| x.state == "normal").map(|x| VoucherApplyRow { student_id: x.student_id, fiscal_month_id: x.fiscal_month_id, program_id: x.program_id, amount_item_id: x.amount_item_id, from_fund_id: x.from_fund_id.unwrap(), amount: x.amount, confirmed: x.state == "check" }).collect();
         self.db.write(|tx| apply(tx, &VoucherApplyInput { school_year_id: self.year_id, kind: kind.into(), reason: "시험 소급".into(), decided_on: Some("2026-05-10".into()), processed_on: Some("2026-05-15".into()), status: status.into(), rows, decisions: vec![] }))
     }
     fn free_actual(&self, seq: usize) -> i64 {
@@ -116,7 +116,7 @@ fn a_policy_kinds_history_and_validation() {
     assert_eq!(h.iter().filter(|x| x.superseded_at.is_none()).count(), 1);
     assert_eq!(t.db.read(|c| policy_current(c, t.year_id)).unwrap().unwrap().basis, "unlimited");
     // 7. 검증: 음수·누락·잘못된 기준
-    let bad = |basis: &str, a: Option<i64>, s1: Option<i64>, s2: Option<i64>| t.db.write(|tx| policy_save(tx, &VoucherPolicyInput { school_year_id: t.year_id, basis: basis.into(), annual_limit: a, semester1_limit: s1, semester2_limit: s2, carry_over: false, note: String::new() })).unwrap_err().code;
+    let bad = |basis: &str, a: Option<i64>, s1: Option<i64>, s2: Option<i64>| t.db.write(|tx| policy_save(tx, &VoucherPolicyInput { school_year_id: t.year_id, basis: basis.into(), annual_limit: a, semester1_limit: s1, semester2_limit: s2, carry_over: false, ..Default::default() })).unwrap_err().code;
     assert_eq!(bad("annual", None, None, None), "INVALID");
     assert_eq!(bad("annual", Some(-1), None, None), "INVALID");
     assert_eq!(bad("semester", None, Some(1), None), "INVALID");
@@ -322,7 +322,7 @@ fn c_two_programs_same_month_need_user_decision_scenario_5() {
     let p = t.db.read(|c| retro_preview(c, t.year_id, &[t.stu], &d)).unwrap();
     assert_eq!((p.normal_count, p.normal_total), (2, 50_000));
     // 배분 없이 등록하려 하면 재검증에서 막힌다 (전부 되돌림)
-    let rows: Vec<VoucherApplyRow> = p.proposals.iter().map(|x| VoucherApplyRow { student_id: x.student_id, fiscal_month_id: x.fiscal_month_id, program_id: x.program_id, amount_item_id: x.amount_item_id, from_fund_id: x.from_fund_id.unwrap(), amount: x.amount }).collect();
+    let rows: Vec<VoucherApplyRow> = p.proposals.iter().map(|x| VoucherApplyRow { student_id: x.student_id, fiscal_month_id: x.fiscal_month_id, program_id: x.program_id, amount_item_id: x.amount_item_id, from_fund_id: x.from_fund_id.unwrap(), amount: x.amount, confirmed: x.state == "check" }).collect();
     let err = t.db.write(|tx| apply(tx, &VoucherApplyInput { school_year_id: t.year_id, kind: "retro".into(), reason: "시험".into(), decided_on: None, processed_on: Some("2026-05-20".into()), status: "done".into(), rows: rows.clone(), decisions: vec![] })).unwrap_err();
     assert!(err.message.contains("배분 결정 필요"), "{}", err.message);
     assert_eq!(t.db.read(|c| batch_list(c, t.year_id)).unwrap().len(), 0);
@@ -379,7 +379,7 @@ fn d_retroactive_scenario_1_transfer_refund_and_june_usage() {
     assert_eq!((p.normal_count, p.normal_total), (4, 120_000));
     assert!(p.proposals.iter().all(|x| x.from_fund_id == Some(t.ben) && x.amount == 30_000));
     // 3~5월만 소급(90,000), 6월은 당월 처리로 따로
-    let retro_rows: Vec<VoucherApplyRow> = p.proposals.iter().filter(|x| x.fiscal_month_id != t.m(4)).map(|x| VoucherApplyRow { student_id: x.student_id, fiscal_month_id: x.fiscal_month_id, program_id: x.program_id, amount_item_id: x.amount_item_id, from_fund_id: x.from_fund_id.unwrap(), amount: x.amount }).collect();
+    let retro_rows: Vec<VoucherApplyRow> = p.proposals.iter().filter(|x| x.fiscal_month_id != t.m(4)).map(|x| VoucherApplyRow { student_id: x.student_id, fiscal_month_id: x.fiscal_month_id, program_id: x.program_id, amount_item_id: x.amount_item_id, from_fund_id: x.from_fund_id.unwrap(), amount: x.amount, confirmed: x.state == "check" }).collect();
     let b = t.db.write(|tx| apply(tx, &VoucherApplyInput { school_year_id: t.year_id, kind: "retro".into(), reason: "5월 확정 소급".into(), decided_on: Some("2026-05-10".into()), processed_on: Some("2026-05-15".into()), status: "done".into(), rows: retro_rows, decisions: vec![] })).unwrap();
     assert_eq!((b.item_count, b.total_amount, b.kind_label.as_str()), (3, 90_000, "소급 지원 경정"));
     assert_eq!(b.student_id, Some(t.stu));
@@ -429,7 +429,7 @@ fn d_retroactive_excludes_existing_voucher_pending_and_respects_limit_and_other_
     assert_eq!((apr.tuition, apr.other_actual, apr.free_expected, apr.state.as_str()), (30_000, 30_000, 0, "ok"));
     assert_eq!(u.remaining, Some(0));
     // 처리 예정으로 등록한 3월 경정은 다음 미리보기에서 '처리 예정' 으로 빠진다 (중복 방지)
-    let rows: Vec<VoucherApplyRow> = normal.iter().filter(|x| x.fiscal_month_id == t.m(1)).map(|x| VoucherApplyRow { student_id: x.student_id, fiscal_month_id: x.fiscal_month_id, program_id: x.program_id, amount_item_id: x.amount_item_id, from_fund_id: x.from_fund_id.unwrap(), amount: x.amount }).collect();
+    let rows: Vec<VoucherApplyRow> = normal.iter().filter(|x| x.fiscal_month_id == t.m(1)).map(|x| VoucherApplyRow { student_id: x.student_id, fiscal_month_id: x.fiscal_month_id, program_id: x.program_id, amount_item_id: x.amount_item_id, from_fund_id: x.from_fund_id.unwrap(), amount: x.amount, confirmed: x.state == "check" }).collect();
     t.db.write(|tx| apply(tx, &VoucherApplyInput { school_year_id: t.year_id, kind: "retro".into(), reason: "예정".into(), decided_on: None, processed_on: None, status: "planned".into(), rows, decisions: vec![] })).unwrap();
     let p = t.preview(t.stu);
     assert!(p.proposals.iter().any(|x| x.state == "pending" && x.fiscal_month_id == t.m(1) && x.amount == 20_000));
@@ -438,11 +438,11 @@ fn d_retroactive_excludes_existing_voucher_pending_and_respects_limit_and_other_
     assert_eq!(u.pending_total, 20_000);
     assert_eq!(row(&u, 1, t.coding).state, "pending");
     // 한도를 넘는 금액을 직접 넣으면 재검증에서 막힌다
-    let over = VoucherApplyRow { student_id: t.stu, fiscal_month_id: t.m(4), program_id: t.coding, amount_item_id: t.instr, from_fund_id: t.ben, amount: 30_000 };
+    let over = VoucherApplyRow { student_id: t.stu, fiscal_month_id: t.m(4), program_id: t.coding, amount_item_id: t.instr, from_fund_id: t.ben, amount: 30_000, confirmed: false };
     let err = t.db.write(|tx| apply(tx, &VoucherApplyInput { school_year_id: t.year_id, kind: "retro".into(), reason: "초과".into(), decided_on: None, processed_on: Some("2026-06-01".into()), status: "done".into(), rows: vec![over], decisions: vec![] })).unwrap_err();
     assert!(err.message.contains("한도 초과"), "{}", err.message);
     // 맞춤형지원을 자유수강권으로 바꾸려는 행도 막힌다
-    let other = VoucherApplyRow { student_id: t.stu, fiscal_month_id: t.m(2), program_id: t.coding, amount_item_id: t.instr, from_fund_id: t.custom, amount: 10_000 };
+    let other = VoucherApplyRow { student_id: t.stu, fiscal_month_id: t.m(2), program_id: t.coding, amount_item_id: t.instr, from_fund_id: t.custom, amount: 10_000, confirmed: false };
     let err = t.db.write(|tx| apply(tx, &VoucherApplyInput { school_year_id: t.year_id, kind: "retro".into(), reason: "x".into(), decided_on: None, processed_on: Some("2026-06-01".into()), status: "done".into(), rows: vec![other], decisions: vec![] })).unwrap_err();
     assert_eq!(err.code, "INVALID");
 }
@@ -599,7 +599,7 @@ fn g_bulk_apply_is_atomic_and_revalidates_closed_months_scenario_6() {
     assert_eq!(apr.state, "blocked");
     assert!(apr.reasons.iter().any(|r| r.contains("확정된 달")));
     // 44. 차단 행을 섞어 등록하면 전부 되돌린다 (조용히 건너뛰지 않는다)
-    let all: Vec<VoucherApplyRow> = p.proposals.iter().map(|x| VoucherApplyRow { student_id: x.student_id, fiscal_month_id: x.fiscal_month_id, program_id: x.program_id, amount_item_id: x.amount_item_id, from_fund_id: x.from_fund_id.unwrap(), amount: x.amount }).collect();
+    let all: Vec<VoucherApplyRow> = p.proposals.iter().map(|x| VoucherApplyRow { student_id: x.student_id, fiscal_month_id: x.fiscal_month_id, program_id: x.program_id, amount_item_id: x.amount_item_id, from_fund_id: x.from_fund_id.unwrap(), amount: x.amount, confirmed: x.state == "check" }).collect();
     let err = t.db.write(|tx| apply(tx, &VoucherApplyInput { school_year_id: t.year_id, kind: "retro".into(), reason: "전부".into(), decided_on: None, processed_on: Some("2026-05-15".into()), status: "done".into(), rows: all, decisions: vec![] })).unwrap_err();
     assert!(err.message.contains("확정된 달"), "{}", err.message);
     assert_eq!(t.db.read(|c| batch_list(c, t.year_id)).unwrap().len(), 0);
@@ -645,7 +645,7 @@ fn g_bulk_apply_covers_many_students_and_fails_as_a_whole() {
     let p = t.db.read(|c| retro_preview(c, t.year_id, &[], &[])).unwrap();
     assert_eq!((p.student_count, p.normal_count, p.normal_total), (2, 2, 50_000));
     // 한 학생 행에 잘못된 금액을 섞으면 두 학생 모두 등록되지 않는다
-    let mut rows: Vec<VoucherApplyRow> = p.proposals.iter().map(|x| VoucherApplyRow { student_id: x.student_id, fiscal_month_id: x.fiscal_month_id, program_id: x.program_id, amount_item_id: x.amount_item_id, from_fund_id: x.from_fund_id.unwrap(), amount: x.amount }).collect();
+    let mut rows: Vec<VoucherApplyRow> = p.proposals.iter().map(|x| VoucherApplyRow { student_id: x.student_id, fiscal_month_id: x.fiscal_month_id, program_id: x.program_id, amount_item_id: x.amount_item_id, from_fund_id: x.from_fund_id.unwrap(), amount: x.amount, confirmed: x.state == "check" }).collect();
     rows[1].amount += 1;
     let err = t.db.write(|tx| apply(tx, &VoucherApplyInput { school_year_id: t.year_id, kind: "retro".into(), reason: "x".into(), decided_on: None, processed_on: Some("2026-05-15".into()), status: "done".into(), rows, decisions: vec![] })).unwrap_err();
     assert!(err.message.contains("재검증"), "{}", err.message);
@@ -708,5 +708,388 @@ fn h_source_file_cancel_makes_voucher_transfer_orphan_and_schema_v6_survives() {
     assert_eq!(t.db.read(|c| refund_list(c, t.year_id)).unwrap().len(), 1);
     assert_eq!(t.db.read(|c| batch_list(c, t.year_id)).unwrap().len(), 1);
     assert_eq!(crate::db::migrate::current_version(&rusqlite::Connection::open_in_memory().unwrap()).unwrap(), 0);
-    assert_eq!(crate::db::migrate::latest_version(), 6);
+    assert_eq!(crate::db::migrate::latest_version(), 7);
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// P4.1 — 방과후이용권·자유수강권 중복 대상자 · 초3 초과금 우선 · 학기 기간 · 지원 대상 항목 (지시서 14장 1~45)
+// ══════════════════════════════════════════════════════════════════════════
+
+impl T {
+    fn policy_input(&self, basis: &str, annual: Option<i64>, s1: Option<i64>, s2: Option<i64>, carry: bool) -> VoucherPolicyInput {
+        VoucherPolicyInput { school_year_id: self.year_id, basis: basis.into(), annual_limit: annual, semester1_limit: s1, semester2_limit: s2, carry_over: carry, ..Default::default() }
+    }
+    fn exception(&self, stu: i64, annual: i64) {
+        self.db.write(|tx| exception_save(tx, &VoucherExceptionInput { school_year_id: self.year_id, student_id: stu, basis: "annual".into(), annual_limit: Some(annual), semester1_limit: None, semester2_limit: None, carry_over: false, reason: "시험 예외".into() })).unwrap();
+    }
+    fn rows_of<'a>(&self, p: &'a VoucherRetroPreview, state: &str) -> Vec<VoucherApplyRow> {
+        p.proposals.iter().filter(|x| x.state == state).map(|x| VoucherApplyRow { student_id: x.student_id, fiscal_month_id: x.fiscal_month_id, program_id: x.program_id, amount_item_id: x.amount_item_id, from_fund_id: x.from_fund_id.unwrap(), amount: x.amount, confirmed: state == "check" }).collect()
+    }
+    fn apply_rows(&self, rows: Vec<VoucherApplyRow>, decisions: Vec<VoucherDecision>) -> AppResult<VoucherBatch> {
+        self.db.write(|tx| apply(tx, &VoucherApplyInput { school_year_id: self.year_id, kind: "retro".into(), reason: "P4.1 시험".into(), decided_on: Some("2026-05-10".into()), processed_on: Some("2026-05-15".into()), status: "done".into(), rows, decisions }))
+    }
+    fn fund_amt(&self, u: &VoucherUsage, seq: i32, program: i64, name: &str) -> i64 {
+        row(u, seq, program).funds.iter().find(|f| f.fund_name == name).map(|f| f.amount).unwrap_or(0)
+    }
+}
+
+// ── A. 방과후이용권 중복 대상 (1~6) · 시나리오 1·2 ─────────────────────────
+
+#[test]
+fn p41_a_dual_target_converts_g3x_first_and_keeps_voucher_untouched() {
+    let t = setup();
+    t.policy("annual", Some(100_000), None, None, false);
+    // 시나리오 1: 이용권 60,000 + 초3 초과금 40,000 · 잔액 100,000
+    t.collect(2, t.voucher, 60_000);
+    t.collect(2, t.g3x, 40_000);
+    t.confirm(t.stu, "2026-03-01");
+    let u = t.usage(t.stu);
+    assert!(u.dual, "이용권 실적이 있으면 중복 대상자");
+    let r = row(&u, 2, t.coding);
+    assert_eq!((r.tuition, r.voucher_actual, r.g3x_actual, r.general_actual, r.free_actual), (100_000, 60_000, 40_000, 0, 0));
+    assert_eq!(r.free_expected, 40_000, "이용권 60,000 은 지원 대상 수강료에 들지 않는다 (6)");
+    assert_eq!((r.retro_g3x, r.retro_general), (40_000, 0));
+    let p = t.preview(t.stu);
+    assert_eq!((p.normal_count, p.normal_total, p.check_count), (1, 40_000, 0));
+    let x = &p.proposals[0];
+    assert_eq!((x.from_fund_name.as_str(), x.amount, x.remaining_after), ("초3 초과금", 40_000, 0));
+    assert!(x.reasons.iter().any(|s| s.contains("우선")));
+    t.apply_normal(&p, "retro", "done").unwrap();
+    let u = t.usage(t.stu);
+    assert_eq!(t.fund_amt(&u, 2, t.coding, "방과후이용권"), 60_000, "이용권 불변 (5)");
+    assert_eq!(t.fund_amt(&u, 2, t.coding, "자유수강권"), 40_000);
+    assert_eq!(t.fund_amt(&u, 2, t.coding, "초3 초과금"), 0, "초3 초과금 전액 전환 (2)");
+    assert_eq!(row(&u, 2, t.coding).tuition, 100_000, "전체 유지");
+    assert_eq!((u.used_actual, u.voucher_total, u.remaining), (40_000, 60_000, Some(60_000)), "이용권은 자유수강권 사용액에 들지 않는다");
+    assert_eq!(t.preview(t.stu).normal_count, 0, "이용권 60,000 을 다시 전환하지 않는다");
+    // 시나리오 2: 잔액 25,000 → 25,000 만 전환, 15,000 은 초3 초과금 유지 (3·4)
+    t.collect_for(t.stu2, 2, t.coding, t.voucher, 60_000);
+    t.collect_for(t.stu2, 2, t.coding, t.g3x, 40_000);
+    t.confirm(t.stu2, "2026-03-01");
+    t.exception(t.stu2, 25_000);
+    let p = t.preview(t.stu2);
+    assert_eq!((p.normal_count, p.normal_total), (1, 25_000));
+    assert_eq!(p.proposals[0].remaining_after, 15_000);
+    t.apply_normal(&p, "retro", "done").unwrap();
+    let u = t.usage(t.stu2);
+    assert_eq!(t.fund_amt(&u, 2, t.coding, "방과후이용권"), 60_000);
+    assert_eq!(t.fund_amt(&u, 2, t.coding, "자유수강권"), 25_000);
+    assert_eq!(t.fund_amt(&u, 2, t.coding, "초3 초과금"), 15_000);
+    assert_eq!(row(&u, 2, t.coding).tuition, 100_000);
+    assert_eq!(u.remaining, Some(0));
+    assert_eq!(row(&u, 2, t.coding).state, "ok", "한도 소진분은 초3 초과금으로 남고 확인 대상이 아니다");
+}
+
+// ── B. 초3 초과금 소급 환불 (7~12) · 시나리오 3 ──────────────────────────
+
+#[test]
+fn p41_b_g3x_retroactive_refund_flow() {
+    let t = setup();
+    t.policy("annual", Some(600_000), None, None, false);
+    for seq in 1..=3 {
+        t.collect(seq, t.voucher, 60_000);
+        t.collect(seq, t.g3x, 40_000);
+    }
+    t.confirm(t.stu, "2026-03-01"); // 5월 확정 · 적용 3월
+    let p = t.preview(t.stu);
+    assert_eq!((p.normal_count, p.normal_total), (3, 120_000), "소급 재원경정 120,000 (7)");
+    assert!(p.proposals.iter().all(|x| x.from_fund_name == "초3 초과금"));
+    t.apply_normal(&p, "retro", "done").unwrap();
+    let u = t.usage(t.stu);
+    assert_eq!(u.used_actual, 120_000, "자유수강권 사용액 120,000 증가");
+    assert_eq!(u.voucher_total, 180_000, "이용권 불변");
+    let s = t.db.read(|c| ledger::month_summary(c, t.m(1))).unwrap();
+    assert_eq!(s.collection_total, 100_000, "원장 중복 차감 없음");
+    let r = t.db.read(|c| refund_list(c, t.year_id)).unwrap();
+    assert_eq!(r.len(), 3);
+    assert!(r.iter().all(|x| x.from_fund_name == "초3 초과금" && x.outstanding == 40_000 && x.status == "none"));
+    assert_eq!(r.iter().map(|x| x.outstanding).sum::<i64>(), 120_000, "환불 대상 120,000");
+    let (a, b, c3) = (r[0].transfer_id, r[1].transfer_id, r[2].transfer_id);
+    let a_month = r[0].fiscal_month_id;
+    let done = |tid: i64, amount: i64, confirmed: bool| VoucherRefundInput { transfer_id: tid, amount, status: "done".into(), processed_on: Some("2026-05-20".into()), collected_confirmed: confirmed, evidence: "수납 대장 5/20".into(), reason: "소급 환불".into() };
+    // 8. 전액 환불
+    let ra = t.db.write(|tx| refund_register(tx, &done(a, 40_000, true))).unwrap();
+    // 9. 일부 환불
+    t.db.write(|tx| refund_register(tx, &done(b, 15_000, true))).unwrap();
+    // 10. 미납(수납 확인 없음)이면 완료 처리 차단
+    assert!(t.db.write(|tx| refund_register(tx, &done(c3, 40_000, false))).unwrap_err().message.contains("수납"));
+    // 11. 같은 경정에 중복 환불 → 미반환을 넘으면 차단
+    assert!(t.db.write(|tx| refund_register(tx, &done(b, 30_000, true))).unwrap_err().message.contains("넘습니다"));
+    let r = t.db.read(|c| refund_list(c, t.year_id)).unwrap();
+    let st = |tid: i64| r.iter().find(|x| x.transfer_id == tid).unwrap();
+    assert_eq!((st(a).status.as_str(), st(a).outstanding), ("complete", 0));
+    assert_eq!((st(b).status.as_str(), st(b).outstanding), ("partial", 25_000));
+    assert_eq!((st(c3).status.as_str(), st(c3).outstanding), ("none", 40_000));
+    assert_eq!(t.db.read(|c| ledger::month_summary(c, t.m(1))).unwrap().collection_total, 100_000, "환불은 원장을 다시 차감하지 않는다");
+    // 12. 경정 취소와 반환 이행 연결: 살아 있는 환불이 있으면 경정 취소 불가 → 환불 취소 뒤 경정 취소 → 환불 대상 '취소'
+    assert!(t.db.write(|tx| adjustment::cancel(tx, a, "학생 선택 오류")).is_err());
+    t.db.write(|tx| adjustment::cancel(tx, ra.id, "금액 입력 오류")).unwrap();
+    t.db.write(|tx| adjustment::cancel(tx, a, "학생 선택 오류")).unwrap();
+    let r = t.db.read(|c| refund_list(c, t.year_id)).unwrap();
+    assert_eq!(r.iter().find(|x| x.transfer_id == a).unwrap().status, "cancelled");
+    let u = t.usage(t.stu);
+    assert_eq!(u.used_actual, 80_000, "취소된 경정만큼 사용액이 줄고 초3 초과금으로 돌아간다");
+    assert_eq!(u.rows.iter().find(|x| x.fiscal_month_id == a_month).unwrap().g3x_actual, 40_000);
+}
+
+// ── C. 지원 한도 · 우선순위 (13~19) · 5장 혼합 재원 ───────────────────────
+
+#[test]
+fn p41_c_mixed_funds_priority_confirmation_and_limits() {
+    let t = setup();
+    t.policy("annual", Some(40_000), None, None, false);
+    // 이용권 60,000 + 초3 초과금 30,000 + 일반 수익자 20,000 · 잔액 40,000
+    t.collect(2, t.voucher, 60_000);
+    t.collect(2, t.g3x, 30_000);
+    t.collect(2, t.ben, 20_000);
+    t.confirm(t.stu, "2026-03-01");
+    let u = t.usage(t.stu);
+    let r = row(&u, 2, t.coding);
+    assert_eq!((r.free_expected, r.retro_g3x, r.retro_general), (40_000, 30_000, 10_000), "초3 초과금 우선 (13·14)");
+    let p = t.preview(t.stu);
+    assert_eq!((p.normal_count, p.normal_total, p.check_count, p.check_total), (1, 30_000, 1, 10_000));
+    let g = p.proposals.iter().find(|x| x.state == "normal").unwrap();
+    let gen = p.proposals.iter().find(|x| x.state == "check").unwrap();
+    assert_eq!((g.from_fund_name.as_str(), gen.from_fund_name.as_str()), ("초3 초과금", "일반 수익자"));
+    assert!(gen.reasons.iter().any(|s| s.contains("재원 확인")));
+    // 담당자 확인 없이 일반 수익자를 등록하면 차단 (임의 전환 금지)
+    let mut rows = t.rows_of(&p, "check");
+    rows[0].confirmed = false;
+    let err = t.apply_rows(rows, vec![]).unwrap_err();
+    assert!(err.message.contains("재원 확인"), "{}", err.message);
+    // 초3 초과금을 건너뛰고 일반 수익자만 등록하면 우선순위 위반
+    let err = t.apply_rows(t.rows_of(&p, "check"), vec![]).unwrap_err();
+    assert!(err.message.contains("우선순위"), "{}", err.message);
+    assert_eq!(t.db.read(|c| batch_list(c, t.year_id)).unwrap().len(), 0, "아무것도 등록되지 않았다");
+    // 둘 다 (일반 수익자는 확인 표시) → 자유 40,000 · 초3 초과금 0 · 일반 10,000 · 이용권 60,000
+    let mut rows = t.rows_of(&p, "normal");
+    rows.extend(t.rows_of(&p, "check"));
+    t.apply_rows(rows, vec![]).unwrap();
+    let u = t.usage(t.stu);
+    let r = row(&u, 2, t.coding);
+    assert_eq!((r.free_actual, r.g3x_actual, r.general_actual, r.voucher_actual, r.tuition), (40_000, 0, 10_000, 60_000, 110_000));
+    assert_eq!((u.remaining, r.state.as_str()), (Some(0), "ok"), "한도 일부 소진 (15)");
+    // 16. 한도 완전 소진: 예외 30,000 → 초3 초과금만, 일반 수익자는 제안되지 않고 일반 수익자로 남는다
+    t.collect_for(t.stu2, 2, t.coding, t.voucher, 60_000);
+    t.collect_for(t.stu2, 2, t.coding, t.g3x, 30_000);
+    t.collect_for(t.stu2, 2, t.coding, t.ben, 20_000);
+    t.collect_for(t.stu2, 2, t.coding, t.free, 5_000); // 19. 이미 자유수강권인 금액
+    t.confirm(t.stu2, "2026-03-01");
+    t.exception(t.stu2, 30_000);
+    let p = t.preview(t.stu2);
+    assert_eq!((p.normal_count, p.normal_total, p.check_count), (1, 25_000, 0), "30,000 − 이미 자유 5,000 = 25,000, 초3 초과금에서만 (19)");
+    t.apply_normal(&p, "retro", "done").unwrap();
+    let u = t.usage(t.stu2);
+    let r = row(&u, 2, t.coding);
+    assert_eq!((r.free_actual, r.g3x_actual, r.general_actual), (30_000, 5_000, 20_000));
+    assert_eq!(t.fund_amt(&u, 2, t.coding, "일반 수익자"), 20_000, "한도 소진을 이유로 재원을 바꾸지 않는다");
+    assert_eq!(u.remaining, Some(0));
+}
+
+// ── C. 제한없음 (17·18) · 시나리오 4 ──────────────────────────────────────
+
+#[test]
+fn p41_c_unlimited_still_proposes_remaining_beneficiary_amounts() {
+    let t = setup();
+    t.policy("unlimited", None, None, None, false);
+    // 17. 일반 수익자 90,000 남아 있음 → 제안 90,000
+    t.collect(1, t.ben, 90_000);
+    t.confirm(t.stu, "2026-03-01");
+    let p = t.preview(t.stu);
+    assert_eq!((p.normal_count, p.normal_total), (1, 90_000));
+    // 18. 중복 대상자 초3 초과금 40,000 → 제안 40,000, 이용권 60,000 유지, 한도 오류 없음
+    t.collect_for(t.stu2, 1, t.coding, t.voucher, 60_000);
+    t.collect_for(t.stu2, 1, t.coding, t.g3x, 40_000);
+    t.confirm(t.stu2, "2026-03-01");
+    let p2 = t.preview(t.stu2);
+    assert_eq!((p2.normal_count, p2.normal_total), (1, 40_000));
+    assert_eq!(p2.proposals[0].from_fund_name, "초3 초과금");
+    assert!(p2.usages[0].blocked.is_empty() && p2.usages[0].warnings.is_empty());
+    t.apply_normal(&p, "retro", "done").unwrap();
+    t.apply_normal(&p2, "retro", "done").unwrap();
+    let u2 = t.usage(t.stu2);
+    assert_eq!(t.fund_amt(&u2, 1, t.coding, "방과후이용권"), 60_000);
+    assert_eq!(t.fund_amt(&u2, 1, t.coding, "자유수강권"), 40_000);
+    assert_eq!(t.fund_amt(&u2, 1, t.coding, "초3 초과금"), 0);
+    assert_eq!((u2.limit_total, u2.remaining), (None, None));
+    assert_eq!(t.usage(t.stu).used_actual, 90_000);
+    assert_eq!(t.preview(t.stu).normal_count + t.preview(t.stu2).normal_count, 0, "처리된 금액은 다시 제안하지 않는다");
+}
+
+// ── D. 학기 설정 (20~26) ───────────────────────────────────────────────────
+
+#[test]
+fn p41_d_semester_dates_defaults_validation_and_preservation() {
+    let t = setup();
+    // 20. 기본값
+    let p = t.policy("semester", None, Some(200_000), Some(200_000), true);
+    assert!(p.semester_default);
+    assert_eq!((p.semester1_from.as_str(), p.semester1_to.as_str(), p.semester2_from.as_str(), p.semester2_to.as_str()), ("2026-03-01", "2026-08-31", "2026-09-01", "2027-02-28"));
+    assert!(p.uncovered_months.is_empty() && p.all_items_eligible);
+    // 21. 변경: 1학기 3/1~7/31 · 2학기 9/1~1/31 → 8월·2월 미지원 기간 경고
+    let mut i = t.policy_input("semester", None, Some(100_000), Some(100_000), true);
+    i.semester1_from = Some("2026-03-01".into());
+    i.semester1_to = Some("2026-07-31".into());
+    i.semester2_from = Some("2026-09-01".into());
+    i.semester2_to = Some("2027-01-31".into());
+    let pv = t.db.read(|c| policy_preview(c, &i)).unwrap();
+    assert!(pv.blocked.is_empty(), "{:?}", pv.blocked);
+    assert_eq!(pv.uncovered_months, vec!["8월 (2026-08)".to_string(), "2월 (2027-02)".to_string()]);
+    assert!(pv.warnings.iter().any(|x| x.contains("미지원 기간")));
+    let p = t.db.write(|tx| policy_save(tx, &i)).unwrap();
+    assert!(!p.semester_default);
+    assert_eq!(p.uncovered_months.len(), 2);
+    t.confirm(t.stu, "2026-03-01");
+    t.collect(5, t.ben, 60_000); // 7월
+    t.collect(6, t.ben, 50_000); // 8월
+    t.collect(7, t.ben, 120_000); // 9월
+    let u = t.usage(t.stu);
+    assert_eq!((row(&u, 5, t.coding).semester, row(&u, 5, t.coding).free_expected), (1, 60_000));
+    assert_eq!((row(&u, 6, t.coding).semester, row(&u, 6, t.coding).free_expected, row(&u, 6, t.coding).state.as_str()), (0, 0, "ok"), "8월은 미지원 기간");
+    assert_eq!(row(&u, 7, t.coding).free_expected, 120_000, "24. 1학기 잔액 40,000 이월 → 2학기 140,000");
+    assert!(u.notes.iter().any(|n| n.contains("이월")) && u.notes.iter().any(|n| n.contains("미지원 기간")));
+    // 25. 이월 불허
+    let mut j = i.clone();
+    j.carry_over = false;
+    t.db.write(|tx| policy_save(tx, &j)).unwrap();
+    assert_eq!(row(&t.usage(t.stu), 7, t.coding).free_expected, 100_000);
+    // 22. 겹침 차단 · 23. 학년도 범위 이탈 차단 · 시작>종료 차단
+    let mut bad = i.clone();
+    bad.semester1_to = Some("2026-09-30".into());
+    assert!(t.db.read(|c| policy_preview(c, &bad)).unwrap().blocked.iter().any(|b| b.contains("겹칩")));
+    assert_eq!(t.db.write(|tx| policy_save(tx, &bad)).unwrap_err().code, "INVALID");
+    let mut out = i.clone();
+    out.semester2_to = Some("2027-03-31".into());
+    assert!(t.db.read(|c| policy_preview(c, &out)).unwrap().blocked.iter().any(|b| b.contains("학년도 범위")));
+    let mut rev = i.clone();
+    rev.semester1_from = Some("2026-08-01".into());
+    assert!(t.db.read(|c| policy_preview(c, &rev)).unwrap().blocked.iter().any(|b| b.contains("늦습니다")));
+    let mut neg = i.clone();
+    neg.semester2_limit = Some(-1);
+    assert_eq!(t.db.write(|tx| policy_save(tx, &neg)).unwrap_err().code, "INVALID");
+    // 26. 정책 변경 뒤 기존 거래 보존
+    let p = t.preview(t.stu);
+    t.apply_normal(&p, "retro", "done").unwrap();
+    let before: (i64, i64) = t.db.read(|c| Ok(c.query_row("SELECT count(*), coalesce(sum(amount), 0) FROM ledger_entry WHERE flow = 'transfer' AND state = 'active'", [], |r| Ok((r.get(0)?, r.get(1)?)))?)).unwrap();
+    t.policy("annual", Some(50_000), None, None, false);
+    let after: (i64, i64) = t.db.read(|c| Ok(c.query_row("SELECT count(*), coalesce(sum(amount), 0) FROM ledger_entry WHERE flow = 'transfer' AND state = 'active'", [], |r| Ok((r.get(0)?, r.get(1)?)))?)).unwrap();
+    assert_eq!(before, after, "정책을 바꿔도 완료된 경정은 그대로");
+    assert_eq!(after.1, 0);
+    let h = t.db.read(|c| policy_history(c, t.year_id)).unwrap();
+    assert_eq!(h.len(), 4, "정책 이력 보존");
+    assert!(h[1].uncovered_months.len() == 2, "과거 정책의 학기 기준을 그대로 확인할 수 있다");
+    assert!(t.usage(t.stu).over_total > 0, "새 한도 50,000 기준으로는 초과 사용이 확인 대상으로 보인다 (자동 되돌림 없음)");
+}
+
+// ── E. 지원 대상 항목 (27~30) ─────────────────────────────────────────────
+
+#[test]
+fn p41_e_eligible_items_setting_excludes_and_preserves_done_transfers() {
+    let t = setup();
+    let mut i = t.policy_input("annual", Some(600_000), None, None, false);
+    i.eligible_item_ids = Some(vec![t.instr]);
+    let p = t.db.write(|tx| policy_save(tx, &i)).unwrap();
+    assert!(!p.all_items_eligible);
+    assert_eq!(p.eligible_item_names, vec!["강사료".to_string()]);
+    let mut empty = i.clone();
+    empty.eligible_item_ids = Some(vec![]);
+    assert_eq!(t.db.write(|tx| policy_save(tx, &empty)).unwrap_err().code, "INVALID");
+    t.confirm(t.stu, "2026-03-01");
+    t.collect(2, t.ben, 30_000);
+    t.db.write(|tx| {
+        ledger::insert(tx, &NewEntry {
+            school_year_id: t.year_id, fiscal_month_id: t.m(2), program_id: Some(t.coding), program_group_id: None, student_id: Some(t.stu),
+            fund_type_id: Some(t.ben), amount_item_id: t.textbook, flow: "collection".into(), entry_kind: "initial_collect".into(), amount: 10_000,
+            stage: None, processed_on: None, counterparty: None, upload_file_id: None, source_row_id: None, reason: None,
+        }).map(|_| ())
+    }).unwrap();
+    let u = t.usage(t.stu);
+    let tb = u.rows.iter().find(|r| r.amount_item_id == t.textbook).unwrap();
+    assert_eq!((tb.eligible_item, tb.state.as_str(), tb.free_expected), (false, "excluded", 0), "28. 미지원 항목 제외");
+    let ins = u.rows.iter().find(|r| r.amount_item_id == t.instr).unwrap();
+    assert_eq!((ins.eligible_item, ins.state.as_str(), ins.free_expected), (true, "retro", 30_000), "27. 지원 항목 포함");
+    assert_eq!(u.used_expected, 30_000);
+    assert_eq!(t.preview(t.stu).normal_total, 30_000);
+    // 29. 설정 변경: 모든 항목 → 교재비도 경정 대상
+    let all = t.policy("annual", Some(600_000), None, None, false);
+    assert!(all.all_items_eligible);
+    let p = t.preview(t.stu);
+    assert_eq!((p.normal_count, p.normal_total), (2, 40_000));
+    t.apply_normal(&p, "retro", "done").unwrap();
+    // 다시 강사료만 → 영향 미리보기에 교재비 경정 1건 10,000 이 보이고, 저장해도 완료된 경정은 그대로 (30)
+    let pv = t.db.read(|c| policy_preview(c, &i)).unwrap();
+    assert_eq!((pv.affected_transfer_count, pv.affected_transfer_total), (1, 10_000));
+    assert!(pv.warnings.iter().any(|x| x.contains("자동으로 취소·수정하지 않습니다")));
+    t.db.write(|tx| policy_save(tx, &i)).unwrap();
+    let done: i64 = t.db.read(|c| Ok(c.query_row("SELECT count(*) FROM adjustment WHERE kind = 'fund_transfer' AND status = 'done'", [], |r| r.get(0))?)).unwrap();
+    assert_eq!(done, 2);
+    let u = t.usage(t.stu);
+    let tb = u.rows.iter().find(|r| r.amount_item_id == t.textbook).unwrap();
+    assert_eq!((tb.state.as_str(), tb.free_actual), ("excluded", 10_000), "기존 재원으로 남아 보인다");
+    assert_eq!(t.preview(t.stu).proposals.iter().filter(|x| x.amount_item_id == t.textbook).count(), 0);
+}
+
+// ── F. 여러 프로그램 (31~35) · 시나리오 5 ─────────────────────────────────
+
+#[test]
+fn p41_f_g3x_across_programs_needs_manual_split_and_preserves_totals() {
+    let t = setup();
+    t.policy("annual", Some(50_000), None, None, false);
+    t.collect_for(t.stu, 3, t.art, t.voucher, 60_000);
+    t.collect_for(t.stu, 3, t.art, t.g3x, 30_000);
+    t.collect_for(t.stu, 3, t.coding, t.voucher, 60_000);
+    t.collect_for(t.stu, 3, t.coding, t.g3x, 40_000);
+    t.confirm(t.stu, "2026-03-01");
+    let u = t.usage(t.stu);
+    assert!(u.needs_decision, "32. 한도 부족 → 배분 결정 필요");
+    assert!(u.dual);
+    let p = t.preview(t.stu);
+    assert_eq!((p.normal_count, p.check_count), (0, 0), "확인 전 자동 경정 금지");
+    assert_eq!(p.proposals.iter().filter(|x| x.state == "decide").count(), 2);
+    let d = |a: i64, c: i64| vec![
+        VoucherDecision { student_id: t.stu, fiscal_month_id: t.m(3), program_id: t.art, amount_item_id: t.instr, free_amount: a },
+        VoucherDecision { student_id: t.stu, fiscal_month_id: t.m(3), program_id: t.coding, amount_item_id: t.instr, free_amount: c },
+    ];
+    // 34. 프로그램별 지원 대상 금액 초과 (미술 40,000 > 30,000) · 35. 전체 한도 초과 (70,000 > 50,000) → 여전히 결정 필요
+    for bad in [d(40_000, 10_000), d(30_000, 40_000)] {
+        let u = t.db.read(|c| usage(c, t.year_id, t.stu, &bad)).unwrap();
+        assert!(u.needs_decision);
+    }
+    // 33. 수동 배분 미술 10,000 · 코딩 40,000 → 정상 경정 2건, 전부 초3 초과금에서
+    let ok = d(10_000, 40_000);
+    let p = t.db.read(|c| retro_preview(c, t.year_id, &[t.stu], &ok)).unwrap();
+    assert_eq!((p.normal_count, p.normal_total), (2, 50_000));
+    assert!(p.proposals.iter().all(|x| x.from_fund_name == "초3 초과금"));
+    t.apply_rows(t.rows_of(&p, "normal"), ok.clone()).unwrap();
+    let u = t.db.read(|c| usage(c, t.year_id, t.stu, &ok)).unwrap();
+    assert_eq!(u.used_actual, 50_000, "자유수강권 총 지원액 50,000");
+    assert_eq!(u.g3x_total, 20_000, "초3 초과금 잔액 20,000");
+    assert_eq!(u.voucher_total, 120_000);
+    assert_eq!(u.rows.iter().map(|r| r.tuition).sum::<i64>(), 190_000, "전체 금액 보존 (31)");
+    assert!(u.rows.iter().all(|r| r.state == "ok"));
+    assert_eq!(u.remaining, Some(0));
+}
+
+// ── G. 회귀 (36~45) — 36·37·38·39·40·41·42·43·44 는 기존 P3·P4 시험이 그대로 덮는다. 45: 마이그레이션 ──
+
+#[test]
+fn p41_g_v6_policy_survives_v7_migration_with_defaults() {
+    use crate::db::migrate;
+    let mut c = rusqlite::Connection::open_in_memory().unwrap();
+    c.pragma_update(None, "foreign_keys", "ON").unwrap();
+    migrate::run_up_to(&mut c, 6).unwrap();
+    let y = year::create(&c, 2026).unwrap();
+    c.execute("INSERT INTO voucher_policy (school_year_id, basis, annual_limit, note) VALUES (?1, 'annual', 600000, 'v6 정책')", [y.id]).unwrap();
+    let audits_before: i64 = c.query_row("SELECT count(*) FROM audit_log", [], |r| r.get(0)).unwrap();
+    migrate::run(&mut c).unwrap();
+    assert_eq!(migrate::current_version(&c).unwrap(), 7);
+    assert_eq!(migrate::latest_version(), 7);
+    let p = policy_current(&c, y.id).unwrap().unwrap();
+    assert_eq!((p.annual_limit, p.note.as_str()), (Some(600_000), "v6 정책"), "기존 정책 보존");
+    assert!(p.semester_default && p.all_items_eligible, "기본 학기·모든 항목으로 해석 → 계산 결과 불변");
+    assert_eq!(p.semester2_to, "2027-02-28");
+    let audits_after: i64 = c.query_row("SELECT count(*) FROM audit_log", [], |r| r.get(0)).unwrap();
+    assert_eq!(audits_before, audits_after, "감사 이력 보존 (44)");
+    let err = c.execute("DELETE FROM voucher_policy_item WHERE policy_id = 1", []).err();
+    assert!(err.is_none() || format!("{err:?}").contains("VOUCHER_NO_DELETE"));
 }
