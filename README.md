@@ -17,7 +17,8 @@ Windows 로컬 데스크톱 프로그램입니다. 모든 차액을 자동으로
 
 ```bash
 npm install
-npm run app          # 개발 실행 (vite 1470 + tauri dev)
+npm run app          # 개발 실행 (vite 1470 + tauri dev) — 실사용 자료 폴더
+npm run app:sandbox  # 연습용 자료 폴더(.sandbox/)로 실행 — 실사용 DB 를 건드리지 않음
 npm run check        # tsc + vitest + cargo test
 npm run app:build    # NSIS 설치본
 ```
