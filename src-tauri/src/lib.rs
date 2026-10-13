@@ -88,6 +88,15 @@ pub fn run() {
             commands::upload::fund_alias_delete,
             commands::upload::month_close,
             commands::upload::month_reopen,
+            commands::recon::allocation_board,
+            commands::recon::allocation_auto,
+            commands::recon::allocation_manual,
+            commands::recon::allocation_void,
+            commands::recon::recon_month,
+            commands::recon::recon_detail,
+            commands::recon::recon_note_save,
+            commands::recon::source_row_view,
+            commands::recon::open_stored_file,
         ])
         .run(tauri::generate_context!())
         .expect("앱을 시작하지 못했습니다");

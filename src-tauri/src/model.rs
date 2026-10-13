@@ -483,3 +483,196 @@ pub struct Bootstrap {
     pub school_name: String,
     pub counts: Counts,
 }
+
+// ── P2: 배분 · 대조 ───────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Allocation {
+    pub id: i64,
+    pub entry_id: i64,
+    pub program_id: i64,
+    pub program_name: String,
+    pub amount: i64,
+    pub method: String,
+    pub status: String,
+    pub confirmed: bool,
+    pub reason: String,
+    pub created_at: String,
+    pub source_row_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AllocCandidate {
+    pub program_id: i64,
+    pub program_name: String,
+    pub item_code: String,
+    pub amount: i64,
+    pub source_upload_id: i64,
+    pub source_row_id: i64,
+    /// 학년·반·번호·이름이 모두 같은 학생인가 (false 면 이름만 같은 후보)
+    pub same_student: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingEntry {
+    pub entry_id: i64,
+    pub entry_kind: String,
+    pub student: String,
+    pub student_id: Option<i64>,
+    pub fund_name: String,
+    pub item_code: String,
+    pub item_name: String,
+    pub amount: i64,
+    pub allocated: i64,
+    pub remaining: i64,
+    /// auto · manual · name_only · no_roster · no_student · done
+    pub plan: String,
+    pub candidates: Vec<AllocCandidate>,
+    pub allocations: Vec<Allocation>,
+    pub file_name: String,
+    pub version_no: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AllocationBoard {
+    pub fiscal_month_id: i64,
+    pub roster_upload_count: i64,
+    pub entries: Vec<PendingEntry>,
+    pub unallocated_total: i64,
+    pub allocated_total: i64,
+    pub auto_possible: i64,
+    pub need_user: i64,
+    pub no_student: i64,
+    pub by_item: Vec<SummaryLine>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoAllocateResult {
+    pub entries_allocated: i64,
+    pub lines: i64,
+    pub skipped: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManualPart {
+    pub program_id: i64,
+    pub amount: i64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FundLine {
+    pub fund_name: String,
+    pub basis: Option<i64>,
+    pub expense: Option<i64>,
+    pub diff: Option<i64>,
+    /// ok · mismatch · no_basis · no_expense
+    pub state: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReconRow {
+    pub unit_kind: String,
+    pub unit_id: i64,
+    pub unit_name: String,
+    pub item_set: String,
+    pub item_label: String,
+    pub initial: i64,
+    pub extra: i64,
+    pub refund: i64,
+    pub allocated_in: i64,
+    pub basis: i64,
+    pub expense: i64,
+    pub diff: i64,
+    /// ok · mismatch · missing · unallocated · unmapped · unverifiable · group_only
+    pub status: String,
+    pub status_label: String,
+    pub hints: Vec<String>,
+    pub funds: Vec<FundLine>,
+    pub note_status: String,
+    pub note_label: String,
+    pub needs_recheck: bool,
+    pub fingerprint: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonthRecon {
+    pub fiscal_month_id: i64,
+    pub collection_total: i64,
+    pub expenditure_total: i64,
+    pub comparable_basis: i64,
+    pub comparable_expense: i64,
+    pub unallocated_total: i64,
+    pub todo_count: i64,
+    pub mismatch_count: i64,
+    pub rows: Vec<ReconRow>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraceEntry {
+    pub entry_id: i64,
+    pub entry_kind: String,
+    pub kind_label: String,
+    pub program_name: String,
+    pub party: String,
+    pub fund_name: String,
+    pub fund_text: String,
+    pub item_name: String,
+    pub amount: i64,
+    /// 이 단위에 귀속된 금액 (배분이면 배분액, 직접이면 amount)
+    pub attributed: i64,
+    pub via_allocation: bool,
+    pub month_label: String,
+    pub processed_on: Option<String>,
+    pub state: String,
+    pub file_id: Option<i64>,
+    pub file_name: String,
+    pub version_no: i64,
+    pub file_status: String,
+    pub sheet: String,
+    pub row_no: i64,
+    pub source_row_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReconNote {
+    pub id: i64,
+    pub status: String,
+    pub reason: String,
+    pub fingerprint: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReconDetail {
+    pub row: ReconRow,
+    pub month_label: String,
+    pub members: Vec<String>,
+    pub collection: Vec<TraceEntry>,
+    pub expenditure: Vec<TraceEntry>,
+    pub parties: Vec<SummaryLine>,
+    pub notes: Vec<ReconNote>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceRowView {
+    pub file_id: i64,
+    pub file_name: String,
+    pub version_no: i64,
+    pub stored_name: String,
+    pub sheet: String,
+    pub row_no: i64,
+    pub cells: Vec<String>,
+}

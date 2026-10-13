@@ -4,5 +4,6 @@
 pub mod app;
 pub mod catalog;
 pub mod ledger;
+pub mod recon;
 pub mod upload;
 pub mod year;

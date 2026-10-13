@@ -38,6 +38,13 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../migrations/002_upload_versions.sql"),
         fk_off: true,
     },
+    // 배분 · 확인 메모 표만 더한다.
+    Migration {
+        version: 3,
+        name: "003_allocation_recon",
+        sql: include_str!("../../migrations/003_allocation_recon.sql"),
+        fk_off: false,
+    },
 ];
 
 pub fn latest_version() -> i32 {
@@ -258,7 +265,7 @@ mod tests {
         for t in [
             "school_year", "fiscal_month", "fund_type", "fund_type_alias", "amount_item", "program", "program_alias",
             "program_group", "program_group_member", "student", "upload_file", "upload_row", "upload_apply",
-            "source_row", "ledger_entry", "ledger_correction", "month_close", "audit_log", "app_setting",
+            "source_row", "ledger_entry", "ledger_correction", "month_close", "audit_log", "app_setting", "allocation", "recon_note",
         ] {
             assert!(names.iter().any(|n| n == t), "표 {t} 가 없다: {names:?}");
         }

@@ -10,9 +10,10 @@ Windows 로컬 데스크톱 프로그램입니다. 모든 차액을 자동으로
 
 ## 현재 단계
 
-**P1 — 엑셀 업로드 · 파일 판 · 되돌리기 완료.** 설계와 DB 구조는 [docs/01-P0-설계.md](docs/01-P0-설계.md),
-업로드·되돌리기 규칙은 [docs/02-P1-업로드와-되돌리기.md](docs/02-P1-업로드와-되돌리기.md) 를 보세요.
-다음 단계(P2 월별 대조)는 사용자 확인 후 시작합니다.
+**P2 — 월별 회계 대조 · 프로그램별 배분 · 차액 추적 완료.** 설계와 DB 구조는 [docs/01-P0-설계.md](docs/01-P0-설계.md),
+업로드·되돌리기 규칙은 [docs/02-P1-업로드와-되돌리기.md](docs/02-P1-업로드와-되돌리기.md),
+배분·대조 규칙과 실제 9월 검증 결과는 [docs/03-P2-대조와-배분.md](docs/03-P2-대조와-배분.md) 를 보세요.
+다음 단계(P3)는 사용자 확인 후 시작합니다.
 
 ## 실행·검사
 
@@ -21,6 +22,7 @@ npm install
 npm run app          # 개발 실행 (vite 1470 + tauri dev) — 실사용 자료 폴더
 npm run app:sandbox  # 연습용 자료 폴더(.sandbox/)로 실행 — 실사용 DB 를 건드리지 않음
 npm run check        # tsc + vitest + cargo test
+# 실제 9월 파일 대조(로컬 전용): ASACCOUNTING_REAL_DIR="..." cargo test --lib real_ -- --ignored --nocapture
 py -I scripts/make-fixtures.py   # 가명 시험 엑셀 다시 만들기 (test/fixtures)
 npm run app:build    # NSIS 설치본
 ```

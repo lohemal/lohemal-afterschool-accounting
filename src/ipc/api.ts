@@ -26,6 +26,13 @@ import type {
   SchoolYear,
   UploadDetail,
   UploadFile,
+  AllocationBoard,
+  AutoAllocateResult,
+  ManualPart,
+  MonthRecon,
+  ReconDetail,
+  ReconNote,
+  SourceRowView,
 } from './types'
 
 export const api = {
@@ -64,6 +71,16 @@ export const api = {
   uploadImpact: (fileId: number, action: 'cancel' | 'restore') => invoke<Impact>('upload_impact', { fileId, action }),
   uploadCancel: (fileId: number, reason: string) => invoke<UploadFile>('upload_cancel', { fileId, reason }),
   uploadRestore: (fileId: number, reason: string) => invoke<UploadFile>('upload_restore', { fileId, reason }),
+
+  allocationBoard: (fiscalMonthId: number) => invoke<AllocationBoard>('allocation_board', { fiscalMonthId }),
+  allocationAuto: (fiscalMonthId: number) => invoke<AutoAllocateResult>('allocation_auto', { fiscalMonthId }),
+  allocationManual: (entryId: number, parts: ManualPart[], reason: string) => invoke<number[]>('allocation_manual', { entryId, parts, reason }),
+  allocationVoid: (allocationId: number, reason: string) => invoke<void>('allocation_void', { allocationId, reason }),
+  reconMonth: (fiscalMonthId: number) => invoke<MonthRecon>('recon_month', { fiscalMonthId }),
+  reconDetail: (fiscalMonthId: number, unitKind: string, unitId: number, itemSet: string) => invoke<ReconDetail>('recon_detail', { fiscalMonthId, unitKind, unitId, itemSet }),
+  reconNoteSave: (fiscalMonthId: number, unitKind: string, unitId: number, itemSet: string, status: string, reason: string) => invoke<ReconNote>('recon_note_save', { fiscalMonthId, unitKind, unitId, itemSet, status, reason }),
+  sourceRowView: (sourceRowId: number) => invoke<SourceRowView>('source_row_view', { sourceRowId }),
+  openStoredFile: (fileId: number) => invoke<void>('open_stored_file', { fileId }),
 }
 
 export function isAppError(e: unknown): e is AppError {

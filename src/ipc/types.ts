@@ -361,3 +361,170 @@ export interface AppError {
   message: string
   detail?: string | null
 }
+
+/* ── P2: 배분 · 대조 ─────────────────────────────────── */
+
+export interface Allocation {
+  id: number
+  entryId: number
+  programId: number
+  programName: string
+  amount: number
+  method: 'auto_single' | 'auto_split' | 'manual'
+  status: 'active' | 'voided'
+  confirmed: boolean
+  reason: string
+  createdAt: string
+  sourceRowId: number | null
+}
+
+export interface AllocCandidate {
+  programId: number
+  programName: string
+  itemCode: string
+  amount: number
+  sourceUploadId: number
+  sourceRowId: number
+  sameStudent: boolean
+}
+
+export type AllocPlan = 'auto' | 'manual' | 'name_only' | 'no_roster' | 'no_student' | 'done'
+
+export interface PendingEntry {
+  entryId: number
+  entryKind: string
+  student: string
+  studentId: number | null
+  fundName: string
+  itemCode: string
+  itemName: string
+  amount: number
+  allocated: number
+  remaining: number
+  plan: AllocPlan
+  candidates: AllocCandidate[]
+  allocations: Allocation[]
+  fileName: string
+  versionNo: number
+}
+
+export interface AllocationBoard {
+  fiscalMonthId: number
+  rosterUploadCount: number
+  entries: PendingEntry[]
+  unallocatedTotal: number
+  allocatedTotal: number
+  autoPossible: number
+  needUser: number
+  noStudent: number
+  byItem: SummaryLine[]
+}
+
+export interface AutoAllocateResult {
+  entriesAllocated: number
+  lines: number
+  skipped: number
+}
+
+export interface ManualPart {
+  programId: number
+  amount: number
+}
+
+export type ReconStatus = 'ok' | 'mismatch' | 'missing' | 'unallocated' | 'unmapped' | 'unverifiable' | 'group_only'
+export type NoteStatus = 'none' | 'todo' | 'investigating' | 'explained'
+
+export interface FundLine {
+  fundName: string
+  basis: number | null
+  expense: number | null
+  diff: number | null
+  state: 'ok' | 'mismatch' | 'no_basis' | 'no_expense'
+}
+
+export interface ReconRow {
+  unitKind: 'program' | 'group'
+  unitId: number
+  unitName: string
+  itemSet: string
+  itemLabel: string
+  initial: number
+  extra: number
+  refund: number
+  allocatedIn: number
+  basis: number
+  expense: number
+  diff: number
+  status: ReconStatus
+  statusLabel: string
+  hints: string[]
+  funds: FundLine[]
+  noteStatus: NoteStatus
+  noteLabel: string
+  needsRecheck: boolean
+  fingerprint: string
+}
+
+export interface MonthRecon {
+  fiscalMonthId: number
+  collectionTotal: number
+  expenditureTotal: number
+  comparableBasis: number
+  comparableExpense: number
+  unallocatedTotal: number
+  todoCount: number
+  mismatchCount: number
+  rows: ReconRow[]
+}
+
+export interface TraceEntry {
+  entryId: number
+  entryKind: string
+  kindLabel: string
+  programName: string
+  party: string
+  fundName: string
+  fundText: string
+  itemName: string
+  amount: number
+  attributed: number
+  viaAllocation: boolean
+  monthLabel: string
+  processedOn: string | null
+  state: 'active' | 'voided' | 'superseded'
+  fileId: number | null
+  fileName: string
+  versionNo: number
+  fileStatus: string
+  sheet: string
+  rowNo: number
+  sourceRowId: number | null
+}
+
+export interface ReconNote {
+  id: number
+  status: NoteStatus
+  reason: string
+  fingerprint: string
+  createdAt: string
+}
+
+export interface ReconDetail {
+  row: ReconRow
+  monthLabel: string
+  members: string[]
+  collection: TraceEntry[]
+  expenditure: TraceEntry[]
+  parties: SummaryLine[]
+  notes: ReconNote[]
+}
+
+export interface SourceRowView {
+  fileId: number
+  fileName: string
+  versionNo: number
+  storedName: string
+  sheet: string
+  rowNo: number
+  cells: string[]
+}

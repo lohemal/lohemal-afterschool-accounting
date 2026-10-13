@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 
-import { Button, Card, Empty, Notice, Page, Soon, useToast } from '@/components/ui'
+import { Button, Card, Empty, Notice, Page, useToast } from '@/components/ui'
 import { api, errorMessage } from '@/ipc/api'
 import { won } from '@/lib/format'
 import { schoolYearOf } from '@/lib/months'
@@ -119,7 +119,7 @@ export function DashboardPage() {
                     <td className="num">{m.entryCount === 0 ? <span className="muted">자료 없음</span> : won(m.collectionTotal)}</td>
                     <td className="num">{m.entryCount === 0 ? <span className="muted">자료 없음</span> : won(m.expenditureTotal)}</td>
                     <td className="center">
-                      <span className="badge badge--soon">미검증</span>
+                      {m.entryCount === 0 ? <span className="badge badge--muted">자료 없음</span> : <Link to="/monthly">월별 정산에서 확인</Link>}
                     </td>
                   </tr>
                 ))}
@@ -130,10 +130,9 @@ export function DashboardPage() {
         {!months.isLoading && ms.length === 0 && <Empty title="회계월이 없습니다." />}
       </Card>
 
-      <Soon phase="P2">
-        월별 징수·지출 대조와 차액 표시는 아직 구현되지 않았습니다. 지금은 등록된 거래의 합계만 보여주며, 검증 열은 모두
-        '미검증'입니다.
-      </Soon>
+      <Notice>
+        <div>프로그램별 징수·지출 대조와 차액은 <Link to="/monthly">월별 정산</Link>과 <Link to="/diff">차액 분석</Link>에서 봅니다. 이 표는 유효 거래의 합계만 보여 주며, 합계가 같다는 것이 곧 정상을 뜻하지는 않습니다.</div>
+      </Notice>
     </Page>
   )
 }

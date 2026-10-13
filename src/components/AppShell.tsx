@@ -26,7 +26,7 @@ const GROUPS: { label: string; items: Item[] }[] = [
   {
     label: '검증',
     items: [
-      { to: '/diff', label: '차액 분석', soon: true },
+      { to: '/diff', label: '차액 분석' },
       { to: '/history', label: '변경 이력' },
     ],
   },

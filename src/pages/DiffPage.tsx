@@ -1,19 +1,121 @@
-import { Card, Page, Soon } from '@/components/ui'
+import { useQuery } from '@tanstack/react-query'
+import { useEffect, useMemo, useState } from 'react'
+
+import { ReconDetailModal } from '@/components/ReconDetailModal'
+import { ReconTable } from '@/components/ReconTable'
+import { Card, Empty, Notice, Page } from '@/components/ui'
+import { api, errorMessage } from '@/ipc/api'
+import { won } from '@/lib/format'
+import { currentYm } from '@/lib/months'
+import { useApp } from '@/lib/useApp'
+import type { ReconRow, ReconStatus } from '@/ipc/types'
+
+const STATUS_OPTIONS: [ReconStatus | 'all' | 'attention', string][] = [
+  ['attention', '확인이 필요한 것만 (배분·매핑 미확정 · 불일치 · 자료 부족)'],
+  ['all', '전체'],
+  ['unallocated', '배분 미확정'],
+  ['unmapped', '매핑 미확정'],
+  ['mismatch', '불일치'],
+  ['missing', '자료 부족'],
+  ['group_only', '그룹으로 검증'],
+  ['ok', '정상'],
+  ['unverifiable', '검증 불가'],
+]
+
+const RANK: Record<ReconStatus, number> = { unallocated: 0, unmapped: 1, mismatch: 2, missing: 3, group_only: 4, ok: 5, unverifiable: 6 }
 
 export function DiffPage() {
+  const { year } = useApp()
+  const months = useQuery({ queryKey: ['months', year?.id], queryFn: () => api.monthList(year!.id), enabled: !!year })
+  const [picked, setPicked] = useState<number | ''>('')
+  const [status, setStatus] = useState<string>('attention')
+  const [item, setItem] = useState<string>('all')
+  const [noteFilter, setNoteFilter] = useState<string>('all')
+  const [program, setProgram] = useState('')
+  const [sort, setSort] = useState<'priority' | 'abs'>('priority')
+  const [detail, setDetail] = useState<ReconRow | null>(null)
+
+  useEffect(() => {
+    if (picked !== '' || !months.data?.length) return
+    const today = currentYm(new Date())
+    setPicked((months.data.find((m) => m.ym === today) ?? months.data[0]).id)
+  }, [months.data, picked])
+
+  const recon = useQuery({ queryKey: ['recon', picked], queryFn: () => api.reconMonth(picked as number), enabled: picked !== '' })
+
+  const rows = useMemo(() => {
+    const all = recon.data?.rows ?? []
+    let f = all.filter((r) =>
+      status === 'all' ? true : status === 'attention' ? ['unallocated', 'unmapped', 'mismatch', 'missing'].includes(r.status) : r.status === status,
+    )
+    if (item !== 'all') f = f.filter((r) => r.itemSet === item)
+    if (noteFilter !== 'all') f = f.filter((r) => (noteFilter === 'recheck' ? r.needsRecheck : noteFilter === 'none' ? r.noteStatus === 'none' : r.noteStatus === noteFilter))
+    if (program.trim()) f = f.filter((r) => r.unitName.includes(program.trim()))
+    f = [...f]
+    if (sort === 'abs') f.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff))
+    else f.sort((a, b) => RANK[a.status] - RANK[b.status] || a.unitName.localeCompare(b.unitName, 'ko'))
+    return f
+  }, [recon.data, status, item, noteFilter, program, sort])
+
+  if (!year) {
+    return (
+      <Page title="차액 분석">
+        <Notice>학년도가 없습니다.</Notice>
+      </Page>
+    )
+  }
+  const r = recon.data
   return (
-    <Page title="차액 분석" sub="월별·프로그램별·재원별로 징수와 지출이 맞지 않는 곳을 찾아 원본 거래까지 되짚습니다.">
-      <Soon phase="P5">
-        차액 추출과 원본 추적은 아직 구현되지 않았습니다. 검증 결과가 없을 때 '정상'으로 표시하지 않습니다.
-      </Soon>
-      <Card title="구현 예정">
-        <ul className="list">
-          <li>차액이 생긴 프로그램·재원·항목을 자동으로 추려 금액과 함께 표시</li>
-          <li>각 차액에서 관련 거래(최초 징수·추가징수·환불·지급)와 원본 파일 행으로 바로 이동</li>
-          <li>수용비처럼 대응 지출 자료가 없는 항목은 '검증 불가'로 따로 표시</li>
-          <li>기존 엑셀 파일(1학기·2학기)로 회귀 시험</li>
-        </ul>
+    <Page title="차액 분석" sub="월별·프로그램별·재원별로 징수 기준액과 지급액이 맞지 않는 곳을 찾고, 관련 거래와 원본 엑셀 행까지 되짚습니다. 차액을 0으로 맞추는 기능은 없습니다.">
+      <Card title="필터">
+        <div className="row">
+          <label className="field"><span>월</span>
+            <select className="select" value={picked} onChange={(e) => setPicked(Number(e.target.value))}>
+              {(months.data ?? []).map((m) => <option key={m.id} value={m.id}>{m.label} ({m.ym})</option>)}
+            </select>
+          </label>
+          <label className="field"><span>검증 상태</span>
+            <select className="select" value={status} onChange={(e) => setStatus(e.target.value)}>
+              {STATUS_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            </select>
+          </label>
+          <label className="field"><span>항목</span>
+            <select className="select" value={item} onChange={(e) => setItem(e.target.value)}>
+              <option value="all">전체</option>
+              <option value="instructor">강사료</option>
+              <option value="textbook_material">교재·재료비</option>
+              <option value="admin">수용비</option>
+              <option value="other">기타</option>
+            </select>
+          </label>
+          <label className="field"><span>확인 상태</span>
+            <select className="select" value={noteFilter} onChange={(e) => setNoteFilter(e.target.value)}>
+              <option value="all">전체</option>
+              <option value="recheck">재확인 필요</option>
+              <option value="none">기록 없음</option>
+              <option value="todo">확인 필요</option>
+              <option value="investigating">확인 중</option>
+              <option value="explained">사유 확인</option>
+            </select>
+          </label>
+          <label className="field"><span>프로그램</span>
+            <input className="input" placeholder="이름 일부" value={program} onChange={(e) => setProgram(e.target.value)} style={{ width: 160 }} />
+          </label>
+          <label className="field"><span>정렬</span>
+            <select className="select" value={sort} onChange={(e) => setSort(e.target.value as 'priority' | 'abs')}>
+              <option value="priority">우선순위 (배분 미확정 → 매핑 미확정 → 불일치 → 자료 부족 → 정상)</option>
+              <option value="abs">차액 절댓값 큰 순</option>
+            </select>
+          </label>
+        </div>
       </Card>
+      <Card title="결과" right={r ? <span className="muted">불일치 {won(r.mismatchCount)}건 · 미배분 {won(r.unallocatedTotal)} · 확인 필요 {won(r.todoCount)}건</span> : undefined}>
+        {recon.isLoading && <span className="spin" />}
+        {recon.error && <Notice kind="bad">{errorMessage(recon.error)}</Notice>}
+        {r && rows.length === 0 && <Empty title="조건에 맞는 항목이 없습니다." />}
+        {r && rows.length > 0 && <ReconTable rows={rows} onOpen={setDetail} />}
+      </Card>
+      {detail && picked !== '' && <ReconDetailModal fiscalMonthId={picked} row={detail} onClose={() => setDetail(null)} />}
     </Page>
   )
 }

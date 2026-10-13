@@ -755,6 +755,7 @@ fn void_file_entries(conn: &Connection, file_id: i64, reason: &str) -> AppResult
         let rows = st.query_map([file_id], |r| r.get(0))?;
         rows.collect::<Result<_, _>>()?
     };
+    crate::repo::allocation::void_for_entries(conn, &ids, reason)?;
     for id in ids {
         ledger::void(conn, id, "input_error", reason)?;
     }
