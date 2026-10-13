@@ -133,7 +133,7 @@ fn beneficiary_family_and_independent_funds() {
     assert_eq!(r.excluded[0].fund_name, "맞춤형지원");
     assert_eq!(r.excluded[0].reason, "징수 기준 자료 없음 (지급만 있음)");
     assert_eq!(r.status, "ok");
-    assert_eq!(r.status_label, "정상 (맞춤형지원 제외)");
+    assert_eq!(r.status_label, "비교 가능 재원 정상 · 맞춤형지원 미검증");
     assert_eq!(r.simple_diff, -500_000);
     assert_eq!(r.diff, 0);
 }

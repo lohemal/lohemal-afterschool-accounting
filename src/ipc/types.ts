@@ -670,3 +670,332 @@ export interface EntryPick {
   stage: string
   fileName: string
 }
+
+/* ── P4: 자유수강권 ──────────────────────────────────── */
+
+export type VoucherBasis = 'annual' | 'semester' | 'unlimited'
+export type VoucherTargetStatus = 'pending' | 'confirmed' | 'ended' | 'cancelled'
+
+export interface VoucherPolicy {
+  id: number
+  schoolYearId: number
+  basis: VoucherBasis
+  basisLabel: string
+  annualLimit: number | null
+  semester1Limit: number | null
+  semester2Limit: number | null
+  carryOver: boolean
+  note: string
+  createdAt: string
+  supersededAt: string | null
+}
+
+export interface VoucherPolicyInput {
+  schoolYearId: number
+  basis: VoucherBasis
+  annualLimit?: number | null
+  semester1Limit?: number | null
+  semester2Limit?: number | null
+  carryOver?: boolean
+  note?: string
+}
+
+export interface VoucherException {
+  id: number
+  schoolYearId: number
+  studentId: number
+  student: string
+  basis: VoucherBasis
+  basisLabel: string
+  annualLimit: number | null
+  semester1Limit: number | null
+  semester2Limit: number | null
+  carryOver: boolean
+  reason: string
+  createdAt: string
+  supersededAt: string | null
+}
+
+export interface VoucherExceptionInput {
+  schoolYearId: number
+  studentId: number
+  basis: VoucherBasis
+  annualLimit?: number | null
+  semester1Limit?: number | null
+  semester2Limit?: number | null
+  carryOver?: boolean
+  reason: string
+}
+
+export interface VoucherTargetLog {
+  action: string
+  fromStatus: string
+  toStatus: string
+  detail: string
+  at: string
+}
+
+export interface VoucherTarget {
+  id: number
+  schoolYearId: number
+  studentId: number
+  student: string
+  status: VoucherTargetStatus
+  statusLabel: string
+  confirmedOn: string | null
+  applyFrom: string | null
+  applyTo: string | null
+  transferIn: boolean
+  transferInOn: string | null
+  priorUsed: number | null
+  priorStatus: 'unconfirmed' | 'confirmed'
+  priorStatusLabel: string
+  priorNote: string
+  priorNeedsConfirm: boolean
+  hasException: boolean
+  note: string
+  createdAt: string
+  updatedAt: string
+  logs: VoucherTargetLog[]
+}
+
+export interface VoucherTargetInput {
+  schoolYearId: number
+  studentId: number
+  status: VoucherTargetStatus
+  confirmedOn?: string | null
+  applyFrom?: string | null
+  applyTo?: string | null
+  transferIn?: boolean
+  transferInOn?: string | null
+  note?: string
+  reason?: string
+}
+
+export interface VoucherPriorInput {
+  targetId: number
+  priorUsed: number | null
+  confirmed: boolean
+  note?: string
+}
+
+export interface StudentCreateInput {
+  schoolYearId: number
+  grade: number
+  className: string
+  studentNo: string
+  name: string
+}
+
+export interface VoucherDecision {
+  studentId: number
+  fiscalMonthId: number
+  programId: number
+  amountItemId: number
+  freeAmount: number
+}
+
+export interface VoucherFundPart {
+  fundId: number
+  fundName: string
+  amount: number
+}
+
+export type VoucherUsageState = 'ok' | 'retro' | 'over' | 'decide' | 'pending' | 'outside'
+
+export interface VoucherUsageRow {
+  fiscalMonthId: number
+  ym: string
+  monthLabel: string
+  seq: number
+  programId: number
+  programName: string
+  amountItemId: number
+  itemName: string
+  tuition: number
+  freeActual: number
+  beneficiaryActual: number
+  otherActual: number
+  funds: VoucherFundPart[]
+  freeExpected: number
+  beneficiaryExpected: number
+  pendingTransfer: number
+  delta: number
+  remainingBefore: number | null
+  remainingAfter: number | null
+  state: VoucherUsageState
+  stateLabel: string
+  inWindow: boolean
+  monthClosed: boolean
+}
+
+export interface VoucherUsage {
+  studentId: number
+  student: string
+  targetId: number | null
+  targetStatus: string
+  targetStatusLabel: string
+  applyFrom: string | null
+  applyTo: string | null
+  basis: string
+  basisLabel: string
+  limitSource: string
+  limitLabel: string
+  limitTotal: number | null
+  priorUsed: number | null
+  usedExpected: number
+  usedActual: number
+  pendingTotal: number
+  remaining: number | null
+  remainingS1: number | null
+  remainingS2: number | null
+  exhaustedYm: string | null
+  retroTotal: number
+  overTotal: number
+  needsDecision: boolean
+  decisionMonths: string[]
+  rows: VoucherUsageRow[]
+  blocked: string[]
+  warnings: string[]
+  notes: string[]
+}
+
+export type VoucherProposalState = 'normal' | 'blocked' | 'decide' | 'pending' | 'over' | 'short'
+
+export interface VoucherProposal {
+  key: string
+  studentId: number
+  student: string
+  fiscalMonthId: number
+  monthLabel: string
+  programId: number
+  programName: string
+  amountItemId: number
+  itemName: string
+  fromFundId: number | null
+  fromFundName: string
+  amount: number
+  state: VoucherProposalState
+  stateLabel: string
+  reasons: string[]
+}
+
+export interface VoucherRetroPreview {
+  usages: VoucherUsage[]
+  proposals: VoucherProposal[]
+  normalCount: number
+  normalTotal: number
+  blockedCount: number
+  studentCount: number
+}
+
+export interface VoucherApplyRow {
+  studentId: number
+  fiscalMonthId: number
+  programId: number
+  amountItemId: number
+  fromFundId: number
+  amount: number
+}
+
+export interface VoucherApplyInput {
+  schoolYearId: number
+  kind: 'retro' | 'monthly'
+  reason: string
+  decidedOn?: string | null
+  processedOn?: string | null
+  status: 'planned' | 'done'
+  rows: VoucherApplyRow[]
+  decisions?: VoucherDecision[]
+}
+
+export interface VoucherBatchItem {
+  adjustmentId: number
+  studentId: number
+  student: string
+  monthLabel: string
+  programName: string
+  itemName: string
+  fromFundName: string
+  amount: number
+  status: AdjustStatus
+  statusLabel: string
+}
+
+export interface VoucherBatch {
+  id: number
+  schoolYearId: number
+  kind: 'retro' | 'monthly'
+  kindLabel: string
+  studentId: number | null
+  student: string
+  reason: string
+  itemCount: number
+  totalAmount: number
+  createdAt: string
+  items: VoucherBatchItem[]
+}
+
+export interface VoucherRefundReturn {
+  adjustmentId: number
+  amount: number
+  status: AdjustStatus
+  statusLabel: string
+  processedOn: string | null
+  collectedConfirmed: boolean
+  evidence: string
+}
+
+export type VoucherRefundStatus = 'none' | 'planned' | 'partial' | 'complete' | 'cancelled'
+
+export interface VoucherRefundRow {
+  transferId: number
+  studentId: number
+  student: string
+  fiscalMonthId: number
+  monthLabel: string
+  programName: string
+  itemName: string
+  fromFundId: number
+  fromFundName: string
+  amount: number
+  transferStatus: AdjustStatus
+  transferStatusLabel: string
+  transferProcessedOn: string | null
+  fromBatch: boolean
+  batchId: number | null
+  returnedDone: number
+  returnedPlanned: number
+  outstanding: number
+  status: VoucherRefundStatus
+  statusLabel: string
+  orphan: boolean
+  returns: VoucherRefundReturn[]
+}
+
+export interface VoucherRefundInput {
+  transferId: number
+  amount: number
+  status: 'planned' | 'done'
+  processedOn?: string | null
+  collectedConfirmed: boolean
+  evidence?: string
+  reason: string
+}
+
+export interface VoucherTargetLogRow {
+  targetId: number
+  student: string
+  action: string
+  fromStatus: string
+  toStatus: string
+  detail: string
+  at: string
+}
+
+export interface VoucherHistory {
+  batches: VoucherBatch[]
+  targetLogs: VoucherTargetLogRow[]
+  policyHistory: VoucherPolicy[]
+  exceptionHistory: VoucherException[]
+}

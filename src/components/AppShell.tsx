@@ -28,6 +28,7 @@ const GROUPS: { label: string; items: Item[] }[] = [
     items: [
       { to: '/diff', label: '차액 분석' },
       { to: '/adjust', label: '회계 정정' },
+      { to: '/voucher', label: '자유수강권 관리' },
       { to: '/history', label: '변경 이력' },
     ],
   },

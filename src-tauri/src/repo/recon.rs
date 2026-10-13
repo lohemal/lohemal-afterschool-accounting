@@ -601,7 +601,9 @@ fn build_row(conn: &Connection, month: i64, cp: &Computed, unit: Unit, set: &'st
     let excluded_names: Vec<String> = funds.iter().filter(|f| f.state == "no_basis" || f.state == "no_expense").map(|f| f.fund_name.clone()).collect();
     let label = if total_match_fund_mismatch {
         "총액 일치 · 재원 불일치".to_string()
-    } else if matches!(status, "ok" | "mismatch") && !excluded_names.is_empty() {
+    } else if status == "ok" && !excluded_names.is_empty() {
+        format!("비교 가능 재원 정상 · {} 미검증", excluded_names.join("·"))
+    } else if status == "mismatch" && !excluded_names.is_empty() {
         format!("{} ({} 제외)", status_label(status), excluded_names.join("·"))
     } else {
         status_label(status).to_string()

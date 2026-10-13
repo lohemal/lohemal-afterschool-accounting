@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use crate::db::Db;
 use crate::domain::money::format_won as w;
 use crate::model::{PreviewRequest, ProgramMapInput};
-use crate::repo::{adjustment, allocation, program, recon, upload, year};
+use crate::repo::{adjustment, allocation, program, recon, upload, voucher, year};
 
 fn real_dir() -> PathBuf {
     PathBuf::from(std::env::var("ASACCOUNTING_REAL_DIR").expect("ASACCOUNTING_REAL_DIR"))
@@ -185,6 +185,27 @@ fn real_september_recon() {
     assert_eq!(after.status, "ok");
     assert_eq!(after.basis, baduk.basis, "전체 기준액은 그대로");
     assert_eq!(after.transfer_count, 2);
+    assert_eq!(after.status_label, "비교 가능 재원 정상 · 초3 초과금 미검증");
+
+    // ── P4 연동: 실제 자료에는 학생 식별 정보가 비어 있어 학생 단위 대상자를 만들 수 없다.
+    //    자유수강권 모듈이 실제 DB 상태 위에서 깨지지 않는지, 프로그램 단위 경정이 환불 대상으로 섞이지 않는지만 확인한다.
+    println!("\n## P4 — 자유수강권 모듈 (실제 9월 자료 위, 학생 정보 없음)");
+    let pol = t.db.write(|tx| voucher::policy_save(tx, &crate::model::VoucherPolicyInput { school_year_id: t.year_id, basis: "annual".into(), annual_limit: Some(600_000), semester1_limit: None, semester2_limit: None, carry_over: false, note: "시험".into() })).unwrap();
+    println!("정책 등록: {} (연간 {})", pol.basis_label, w(pol.annual_limit.unwrap()));
+    let targets = t.db.read(|c| voucher::target_list(c, t.year_id)).unwrap();
+    let students = t.db.read(|c| adjustment::students(c, t.year_id)).unwrap();
+    println!("학생 표 {}명 · 대상자 {}명 (학생 정보가 비어 있어 등록 불가)", students.len(), targets.len());
+    assert!(targets.is_empty());
+    let pv = t.db.read(|c| voucher::retro_preview(c, t.year_id, &[], &[])).unwrap();
+    println!("소급 미리보기: 학생 {}명 · 제안 {}건", pv.student_count, pv.proposals.len());
+    assert_eq!((pv.student_count, pv.proposals.len()), (0, 0));
+    let refunds = t.db.read(|c| voucher::refund_list(c, t.year_id)).unwrap();
+    println!("환불 대상: {}건 (프로그램 단위 바둑 경정은 포함되지 않음)", refunds.len());
+    assert!(refunds.is_empty());
+    let h = t.db.read(|c| voucher::history(c, t.year_id)).unwrap();
+    assert_eq!(h.policy_history.len(), 1);
+    let r4 = t.db.read(|c| recon::month(c, t.sep)).unwrap();
+    assert_eq!(r4.rows.len(), r3.rows.len(), "정책 등록은 대조 결과를 바꾸지 않는다");
 }
 
 impl T {

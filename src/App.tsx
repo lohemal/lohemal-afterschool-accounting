@@ -12,6 +12,7 @@ import { HistoryPage } from '@/pages/HistoryPage'
 import { MonthlyPage } from '@/pages/MonthlyPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 import { UploadPage } from '@/pages/UploadPage'
+import { VoucherPage } from '@/pages/VoucherPage'
 
 export default function App() {
   return (
@@ -57,6 +58,7 @@ export default function App() {
               <Route path="/funds" element={<FundsPage />} />
               <Route path="/diff" element={<DiffPage />} />
               <Route path="/adjust" element={<AdjustPage />} />
+              <Route path="/voucher" element={<VoucherPage />} />
               <Route path="/history" element={<HistoryPage />} />
               <Route path="/settings" element={<SettingsPage />} />
             </Route>

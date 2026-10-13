@@ -854,3 +854,401 @@ pub struct EntryPick {
     pub stage: String,
     pub file_name: String,
 }
+
+// ── P4: 자유수강권 ────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoucherPolicy {
+    pub id: i64,
+    pub school_year_id: i64,
+    /// annual · semester · unlimited
+    pub basis: String,
+    pub basis_label: String,
+    pub annual_limit: Option<i64>,
+    pub semester1_limit: Option<i64>,
+    pub semester2_limit: Option<i64>,
+    pub carry_over: bool,
+    pub note: String,
+    pub created_at: String,
+    pub superseded_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoucherPolicyInput {
+    pub school_year_id: i64,
+    pub basis: String,
+    pub annual_limit: Option<i64>,
+    pub semester1_limit: Option<i64>,
+    pub semester2_limit: Option<i64>,
+    #[serde(default)]
+    pub carry_over: bool,
+    #[serde(default)]
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoucherException {
+    pub id: i64,
+    pub school_year_id: i64,
+    pub student_id: i64,
+    pub student: String,
+    pub basis: String,
+    pub basis_label: String,
+    pub annual_limit: Option<i64>,
+    pub semester1_limit: Option<i64>,
+    pub semester2_limit: Option<i64>,
+    pub carry_over: bool,
+    pub reason: String,
+    pub created_at: String,
+    pub superseded_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoucherExceptionInput {
+    pub school_year_id: i64,
+    pub student_id: i64,
+    pub basis: String,
+    pub annual_limit: Option<i64>,
+    pub semester1_limit: Option<i64>,
+    pub semester2_limit: Option<i64>,
+    #[serde(default)]
+    pub carry_over: bool,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoucherTargetLog {
+    pub action: String,
+    pub from_status: String,
+    pub to_status: String,
+    pub detail: String,
+    pub at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoucherTarget {
+    pub id: i64,
+    pub school_year_id: i64,
+    pub student_id: i64,
+    pub student: String,
+    /// pending · confirmed · ended · cancelled
+    pub status: String,
+    pub status_label: String,
+    pub confirmed_on: Option<String>,
+    pub apply_from: Option<String>,
+    pub apply_to: Option<String>,
+    pub transfer_in: bool,
+    pub transfer_in_on: Option<String>,
+    pub prior_used: Option<i64>,
+    /// unconfirmed · confirmed
+    pub prior_status: String,
+    pub prior_status_label: String,
+    pub prior_note: String,
+    /// 전입생인데 이전 학교 사용액이 확인되지 않음 → 사용액 계산 차단
+    pub prior_needs_confirm: bool,
+    pub has_exception: bool,
+    pub note: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub logs: Vec<VoucherTargetLog>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoucherTargetInput {
+    pub school_year_id: i64,
+    pub student_id: i64,
+    pub status: String,
+    pub confirmed_on: Option<String>,
+    pub apply_from: Option<String>,
+    pub apply_to: Option<String>,
+    #[serde(default)]
+    pub transfer_in: bool,
+    pub transfer_in_on: Option<String>,
+    #[serde(default)]
+    pub note: String,
+    /// 상태를 바꾸는 사유 (이력에 남는다)
+    #[serde(default)]
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoucherPriorInput {
+    pub target_id: i64,
+    pub prior_used: Option<i64>,
+    /// true 면 '확인됨'. 0원도 담당자가 명시해야 확인된다.
+    #[serde(default)]
+    pub confirmed: bool,
+    #[serde(default)]
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudentCreateInput {
+    pub school_year_id: i64,
+    pub grade: i32,
+    pub class_name: String,
+    pub student_no: String,
+    pub name: String,
+}
+
+/// 담당자가 정한 한 달 안 프로그램별 자유수강권 배분.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoucherDecision {
+    pub student_id: i64,
+    pub fiscal_month_id: i64,
+    pub program_id: i64,
+    pub amount_item_id: i64,
+    pub free_amount: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoucherFundPart {
+    pub fund_id: i64,
+    pub fund_name: String,
+    pub amount: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoucherUsageRow {
+    pub fiscal_month_id: i64,
+    pub ym: String,
+    pub month_label: String,
+    pub seq: i32,
+    pub program_id: i64,
+    pub program_name: String,
+    pub amount_item_id: i64,
+    pub item_name: String,
+    /// 수강료(징수 기준액 합) = 자유수강권 + 수익자 + 기타
+    pub tuition: i64,
+    pub free_actual: i64,
+    pub beneficiary_actual: i64,
+    pub other_actual: i64,
+    pub funds: Vec<VoucherFundPart>,
+    /// 계산 지원액 (적용 기간 밖이면 0)
+    pub free_expected: i64,
+    pub beneficiary_expected: i64,
+    /// 처리 예정 재원경정(→자유수강권) 금액
+    pub pending_transfer: i64,
+    /// free_expected − free_actual − pending_transfer. 양수면 경정(소급) 대상, 음수면 계산보다 많이 쓴 것
+    pub delta: i64,
+    pub remaining_before: Option<i64>,
+    pub remaining_after: Option<i64>,
+    /// ok · retro · over · decide · pending · outside
+    pub state: String,
+    pub state_label: String,
+    pub in_window: bool,
+    pub month_closed: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoucherUsage {
+    pub student_id: i64,
+    pub student: String,
+    pub target_id: Option<i64>,
+    pub target_status: String,
+    pub target_status_label: String,
+    pub apply_from: Option<String>,
+    pub apply_to: Option<String>,
+    pub basis: String,
+    pub basis_label: String,
+    /// 정책 · 학생 예외
+    pub limit_source: String,
+    pub limit_label: String,
+    pub limit_total: Option<i64>,
+    pub prior_used: Option<i64>,
+    pub used_expected: i64,
+    pub used_actual: i64,
+    pub pending_total: i64,
+    pub remaining: Option<i64>,
+    pub remaining_s1: Option<i64>,
+    pub remaining_s2: Option<i64>,
+    pub exhausted_ym: Option<String>,
+    pub retro_total: i64,
+    pub over_total: i64,
+    pub needs_decision: bool,
+    pub decision_months: Vec<String>,
+    pub rows: Vec<VoucherUsageRow>,
+    pub blocked: Vec<String>,
+    pub warnings: Vec<String>,
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoucherProposal {
+    pub key: String,
+    pub student_id: i64,
+    pub student: String,
+    pub fiscal_month_id: i64,
+    pub month_label: String,
+    pub program_id: i64,
+    pub program_name: String,
+    pub amount_item_id: i64,
+    pub item_name: String,
+    pub from_fund_id: Option<i64>,
+    pub from_fund_name: String,
+    pub amount: i64,
+    /// normal · blocked · decide · pending · over · short
+    pub state: String,
+    pub state_label: String,
+    pub reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoucherRetroPreview {
+    pub usages: Vec<VoucherUsage>,
+    pub proposals: Vec<VoucherProposal>,
+    pub normal_count: i64,
+    pub normal_total: i64,
+    pub blocked_count: i64,
+    pub student_count: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoucherApplyRow {
+    pub student_id: i64,
+    pub fiscal_month_id: i64,
+    pub program_id: i64,
+    pub amount_item_id: i64,
+    pub from_fund_id: i64,
+    pub amount: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoucherApplyInput {
+    pub school_year_id: i64,
+    /// retro · monthly
+    pub kind: String,
+    pub reason: String,
+    pub decided_on: Option<String>,
+    pub processed_on: Option<String>,
+    /// planned · done
+    pub status: String,
+    pub rows: Vec<VoucherApplyRow>,
+    #[serde(default)]
+    pub decisions: Vec<VoucherDecision>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoucherBatchItem {
+    pub adjustment_id: i64,
+    pub student_id: i64,
+    pub student: String,
+    pub month_label: String,
+    pub program_name: String,
+    pub item_name: String,
+    pub from_fund_name: String,
+    pub amount: i64,
+    pub status: String,
+    pub status_label: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoucherBatch {
+    pub id: i64,
+    pub school_year_id: i64,
+    pub kind: String,
+    pub kind_label: String,
+    pub student_id: Option<i64>,
+    pub student: String,
+    pub reason: String,
+    pub item_count: i64,
+    pub total_amount: i64,
+    pub created_at: String,
+    pub items: Vec<VoucherBatchItem>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoucherRefundReturn {
+    pub adjustment_id: i64,
+    pub amount: i64,
+    pub status: String,
+    pub status_label: String,
+    pub processed_on: Option<String>,
+    pub collected_confirmed: bool,
+    pub evidence: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoucherRefundRow {
+    pub transfer_id: i64,
+    pub student_id: i64,
+    pub student: String,
+    pub fiscal_month_id: i64,
+    pub month_label: String,
+    pub program_name: String,
+    pub item_name: String,
+    pub from_fund_id: i64,
+    pub from_fund_name: String,
+    pub amount: i64,
+    pub transfer_status: String,
+    pub transfer_status_label: String,
+    pub transfer_processed_on: Option<String>,
+    pub from_batch: bool,
+    pub batch_id: Option<i64>,
+    pub returned_done: i64,
+    pub returned_planned: i64,
+    pub outstanding: i64,
+    /// none · planned · partial · complete · cancelled
+    pub status: String,
+    pub status_label: String,
+    pub orphan: bool,
+    pub returns: Vec<VoucherRefundReturn>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoucherRefundInput {
+    pub transfer_id: i64,
+    pub amount: i64,
+    /// planned · done
+    pub status: String,
+    pub processed_on: Option<String>,
+    /// 실제 수납(학부모가 실제로 낸 돈) 근거를 확인했는가 — 처리 완료에 필수
+    #[serde(default)]
+    pub collected_confirmed: bool,
+    #[serde(default)]
+    pub evidence: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoucherTargetLogRow {
+    pub target_id: i64,
+    pub student: String,
+    pub action: String,
+    pub from_status: String,
+    pub to_status: String,
+    pub detail: String,
+    pub at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoucherHistory {
+    pub batches: Vec<VoucherBatch>,
+    pub target_logs: Vec<VoucherTargetLogRow>,
+    pub policy_history: Vec<VoucherPolicy>,
+    pub exception_history: Vec<VoucherException>,
+}

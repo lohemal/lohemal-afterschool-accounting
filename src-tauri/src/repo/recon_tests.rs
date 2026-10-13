@@ -166,7 +166,7 @@ fn scenario_m_merged_funds_compare_once_and_custom_support_is_not_compared() {
     assert!(ra.hints.iter().any(|h| h.contains("맞춤형지원")));
     assert_eq!(ra.expense, 715_000, "표시 합계에는 들어가되");
     assert_eq!(ra.diff, 0, "차액은 비교 가능한 재원끼리만");
-    assert_eq!(ra.status_label, "정상 (맞춤형지원 제외)");
+    assert_eq!(ra.status_label, "비교 가능 재원 정상 · 맞춤형지원 미검증");
     assert_eq!(r.comparable_expense, 315_000, "비교 가능 금액에는 빠진다");
 }
 

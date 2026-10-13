@@ -12,6 +12,7 @@ pub mod recon;
 pub mod setting;
 pub mod student;
 pub mod upload;
+pub mod voucher;
 pub mod year;
 
 #[cfg(test)]

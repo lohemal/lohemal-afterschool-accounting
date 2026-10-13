@@ -3,3 +3,4 @@
 pub mod hash;
 pub mod money;
 pub mod months;
+pub mod voucher;
