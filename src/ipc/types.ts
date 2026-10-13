@@ -435,11 +435,20 @@ export type ReconStatus = 'ok' | 'mismatch' | 'missing' | 'unallocated' | 'unmap
 export type NoteStatus = 'none' | 'todo' | 'investigating' | 'explained'
 
 export interface FundLine {
+  fundId: number | null
   fundName: string
+  rootId: number | null
   basis: number | null
   expense: number | null
   diff: number | null
-  state: 'ok' | 'mismatch' | 'no_basis' | 'no_expense'
+  state: 'ok' | 'mismatch' | 'no_basis' | 'no_expense' | 'unmapped'
+}
+
+export interface ExcludedFund {
+  fundName: string
+  basis: number
+  expense: number
+  reason: string
 }
 
 export interface ReconRow {
@@ -454,11 +463,23 @@ export interface ReconRow {
   allocatedIn: number
   basis: number
   expense: number
+  simpleDiff: number
+  comparableBasis: number
+  comparableExpense: number
+  /** 재원별 대조 차액 (판정 기준) */
   diff: number
+  excludedBasis: number
+  excludedExpense: number
+  unmappedBasis: number
+  unmappedExpense: number
+  unallocatedInSet: number
+  excluded: ExcludedFund[]
+  totalMatchFundMismatch: boolean
   status: ReconStatus
   statusLabel: string
   hints: string[]
   funds: FundLine[]
+  fundsMerged: FundLine[]
   noteStatus: NoteStatus
   noteLabel: string
   needsRecheck: boolean
@@ -469,11 +490,15 @@ export interface MonthRecon {
   fiscalMonthId: number
   collectionTotal: number
   expenditureTotal: number
+  simpleDiff: number
   comparableBasis: number
   comparableExpense: number
+  excludedBasis: number
+  excludedExpense: number
   unallocatedTotal: number
   todoCount: number
   mismatchCount: number
+  missingCount: number
   rows: ReconRow[]
 }
 

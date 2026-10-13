@@ -7,7 +7,7 @@ import { ReconDetailModal } from '@/components/ReconDetailModal'
 import { ReconTable } from '@/components/ReconTable'
 import { Button, Card, Empty, Notice, Page, useToast } from '@/components/ui'
 import { api, errorMessage } from '@/ipc/api'
-import { won } from '@/lib/format'
+import { diff, won } from '@/lib/format'
 import { currentYm } from '@/lib/months'
 import { useApp } from '@/lib/useApp'
 import type { Flow, ReconRow, Stage } from '@/ipc/types'
@@ -98,17 +98,19 @@ export function MonthlyPage() {
         >
           {r && (
             <div className="row" style={{ marginBottom: 10 }}>
-              <div className="stat"><span>전체 징수액 (유효 거래)</span><strong>{won(r.collectionTotal)}</strong></div>
-              <div className="stat"><span>전체 지출액 (유효 거래)</span><strong>{won(r.expenditureTotal)}</strong></div>
-              <div className="stat"><span>대조 가능 기준액</span><strong>{won(r.comparableBasis)}</strong></div>
-              <div className="stat"><span>대조 가능 지급액</span><strong>{won(r.comparableExpense)}</strong></div>
+              <div className="stat"><span>전체 징수 기준액</span><strong>{won(r.collectionTotal)}</strong></div>
+              <div className="stat"><span>전체 지급액</span><strong>{won(r.expenditureTotal)}</strong></div>
+              <div className="stat" title="전체 징수액과 지급액의 단순 차이이며, 비교 범위가 다를 경우 회계 오류를 의미하지 않습니다."><span>전체 단순 차액 (참고)</span><strong>{diff(r.simpleDiff)}</strong></div>
+              <div className="stat"><span>비교 가능 (징수 / 지급)</span><strong>{won(r.comparableBasis)} / {won(r.comparableExpense)}</strong></div>
+              <div className="stat"><span>비교 제외 (징수 / 지급)</span><strong>{won(r.excludedBasis)} / {won(r.excludedExpense)}</strong></div>
               <div className={`stat ${r.unallocatedTotal ? 'stat--warn' : ''}`}><span>미배분 징수액</span><strong>{won(r.unallocatedTotal)}</strong></div>
               <div className={`stat ${r.mismatchCount ? 'stat--bad' : ''}`}><span>불일치</span><strong>{won(r.mismatchCount)}건</strong></div>
+              <div className="stat"><span>자료 부족</span><strong>{won(r.missingCount)}건</strong></div>
               <div className={`stat ${r.todoCount ? 'stat--warn' : ''}`}><span>확인 필요</span><strong>{won(r.todoCount)}건</strong></div>
             </div>
           )}
           <p className="muted" style={{ margin: '0 0 8px', fontSize: 12 }}>
-            전체 징수액과 지출액은 범위가 달라(맞춤형지원 등) 두 값의 차이가 곧 회계 오류는 아닙니다. 대조는 같은 프로그램·재원·항목끼리만 합니다.
+            전체 단순 차액은 전체 징수액과 지급액의 단순 차이이며, 비교 범위가 다를 경우(맞춤형지원처럼 한쪽에만 있는 재원) 회계 오류를 의미하지 않습니다. 판정은 같은 프로그램·항목에서 양쪽 자료가 다 있는 재원끼리의 '대조 차액'으로만 합니다. 전체 = 비교 가능 + 비교 제외(+ 미배분).
           </p>
           <div className="tabs">
             <button type="button" className={tab === 'recon' ? 'tab tab--on' : 'tab'} onClick={() => setTab('recon')}>프로그램별 검증 현황</button>

@@ -45,6 +45,13 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../../migrations/003_allocation_recon.sql"),
         fk_off: false,
     },
+    // 기본 재원 이름을 지시서 용어로 맞춘다 (사용자가 바꾼 이름은 건드리지 않는다). 표 구조 변경 없음.
+    Migration {
+        version: 4,
+        name: "004_fund_names",
+        sql: include_str!("../../migrations/004_fund_names.sql"),
+        fk_off: false,
+    },
 ];
 
 pub fn latest_version() -> i32 {

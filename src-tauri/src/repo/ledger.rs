@@ -580,7 +580,7 @@ mod tests {
         assert_eq!(s.transfer_balance, 0);
         assert_eq!(s.collection_total, 0, "재원 이동은 징수 합계를 바꾸지 않는다");
         let by_fund: Vec<(String, i64)> = s.rows.iter().map(|r| (r.fund_type_name.clone(), r.total)).collect();
-        assert!(by_fund.contains(&("수익자".into(), -70_000)));
+        assert!(by_fund.contains(&("일반 수익자".into(), -70_000)));
         assert!(by_fund.contains(&("자유수강권".into(), 70_000)));
 
         // 한쪽을 취소하면 쌍이 함께 취소된다.

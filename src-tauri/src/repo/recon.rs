@@ -4,15 +4,25 @@
 //! 파일 취소·교체·복원이 일어나면 자연히 바뀐다. 담당자의 확인 메모만 `recon_note` 에 남고,
 //! 메모를 저장할 때의 지문(fingerprint)과 지금 지문이 다르면 '재확인 필요'다.
 //!
-//! 판정 규칙 (지시서 4-5)
+//! 재원 분류는 **이름이 아니라 재원 id 와 상위 관계**로 한다 (P2.1, `FundIndex`).
+//!   · 통합 재원(`merged_into_id`)은 통합 대상 id 로 접는다 → '초3 지원금' = 방과후이용권, 한 번만 더한다.
+//!   · `parent_id` 가 있는 재원(초3 초과금 → 일반 수익자)은 독립 조회도 되고, '수익자 통합 보기'에서는 상위와 합친다.
+//!     통합 합계 = 상위 + 하위 (하위를 다시 더하지 않는다).
+//!   · 맞춤형지원·방과후이용권·자유수강권은 상위가 없는 독립 재원이라 어떤 합계에도 섞이지 않는다.
+//!
+//! 차액은 두 가지로 나누어 보여 준다.
+//!   전체 단순 차액   = 전체 징수 기준액 − 전체 지급액 (참고 지표, 비교 범위가 다르면 오류가 아니다)
+//!   재원별 대조 차액 = 양쪽 자료가 다 있는 재원끼리의 (징수 − 지급) 합 — 판정은 이것으로만 한다.
+//!   전체 = 비교 가능 + 비교 제외(한쪽에만 있는 재원) + 매핑 미확정(재원 NULL) 이 항상 성립한다.
+//!
+//! 판정 (지시서 P2 4-5, P2.1 5장)
 //!   unverifiable 검증 불가  — 수용비·기타처럼 대응 지출 자료가 없는 항목
 //!   group_only   그룹 검증  — 지급이 그룹으로 묶여 개별 프로그램 지급액을 알 수 없음
 //!   unallocated  배분 미확정 — 이 달에 아직 프로그램에 배분되지 않은 같은 항목의 징수 거래가 있음
 //!   unmapped     매핑 미확정 — 재원이 미확정인 거래가 섞여 있음
 //!   missing      자료 부족  — 징수 쪽이나 지출 쪽 자료가 없음 (0원으로 보지 않는다)
-//!   mismatch     불일치     — 비교 가능한 재원에서 차액이 있음
+//!   mismatch     불일치     — 비교 가능한 재원에서 차액이 있음 (총액이 같아도 재원이 어긋나면 불일치)
 //!   ok           정상       — 비교 가능한 재원이 모두 0원 차액
-//! 차액 = 징수 기준액 − 지급액. 기준액 = 최초 징수 + 추가징수 − 환불(원장 부호 그대로 합산).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -76,42 +86,116 @@ pub fn status_rank(s: &str) -> i32 {
     }
 }
 
+// ── 재원 분류 ───────────────────────────────────────────────────────────
+
+/// 재원 표 전체 — 통합·상하위 관계를 id 로 푼다. 이름은 표시에만 쓴다.
+#[derive(Debug, Clone)]
+pub struct FundIndex {
+    names: HashMap<i64, String>,
+    sort: HashMap<i64, i32>,
+    /// 통합 대상 (없으면 자기 자신)
+    effective: HashMap<i64, i64>,
+    /// 상위 재원 (통합을 푼 뒤의 id 기준)
+    parent: HashMap<i64, i64>,
+}
+
+impl FundIndex {
+    pub fn load(conn: &Connection) -> AppResult<FundIndex> {
+        let mut st = conn.prepare("SELECT id, name, sort_order, merged_into_id, parent_id FROM fund_type")?;
+        let rows: Vec<(i64, String, i32, Option<i64>, Option<i64>)> = st
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?
+            .collect::<Result<_, _>>()?;
+        let mut idx = FundIndex { names: HashMap::new(), sort: HashMap::new(), effective: HashMap::new(), parent: HashMap::new() };
+        for (id, name, sort, merged, _) in &rows {
+            idx.names.insert(*id, name.clone());
+            idx.sort.insert(*id, *sort);
+            idx.effective.insert(*id, merged.unwrap_or(*id));
+        }
+        for (id, _, _, merged, parent) in &rows {
+            if merged.is_some() {
+                continue;
+            }
+            if let Some(p) = parent {
+                let pe = idx.effective.get(p).copied().unwrap_or(*p);
+                if pe != *id {
+                    idx.parent.insert(*id, pe);
+                }
+            }
+        }
+        Ok(idx)
+    }
+
+    /// 통합을 푼 id. 모르는 id 는 그대로.
+    pub fn effective(&self, id: i64) -> i64 {
+        self.effective.get(&id).copied().unwrap_or(id)
+    }
+
+    /// 통합 보기에서 묶이는 뿌리 (상위 재원이 있으면 상위, 없으면 자기 자신).
+    pub fn root(&self, id: i64) -> i64 {
+        let e = self.effective(id);
+        self.parent.get(&e).copied().unwrap_or(e)
+    }
+
+    pub fn name(&self, id: i64) -> String {
+        self.names.get(&id).cloned().unwrap_or_else(|| format!("재원 #{id}"))
+    }
+
+    pub fn sort_key(&self, id: i64) -> i32 {
+        self.sort.get(&id).copied().unwrap_or(i32::MAX)
+    }
+
+    /// 뿌리 id 의 하위 재원 이름들 (통합 보기 라벨용).
+    pub fn children_names(&self, root: i64) -> Vec<String> {
+        let mut v: Vec<(i32, String)> = self.parent.iter().filter(|(_, p)| **p == root).map(|(c, _)| (self.sort_key(*c), self.name(*c))).collect();
+        v.sort();
+        v.into_iter().map(|x| x.1).collect()
+    }
+
+    pub fn merged_label(&self, root: i64) -> String {
+        let kids = self.children_names(root);
+        if kids.is_empty() {
+            self.name(root)
+        } else {
+            format!("{}({} 포함)", self.name(root), kids.join("·"))
+        }
+    }
+}
+
+// ── 거래 적재 ───────────────────────────────────────────────────────────
+
 #[derive(Debug, Clone)]
 struct E {
     id: i64,
     program_id: Option<i64>,
     group_id: Option<i64>,
     student_id: Option<i64>,
-    fund_id: Option<i64>,
-    fund_name: String,
+    /// 통합을 푼 재원 id. None = 미확정
+    fund: Option<i64>,
     item_code: String,
     flow: String,
     kind: String,
     amount: i64,
 }
 
-fn load_entries(conn: &Connection, month: i64) -> AppResult<Vec<E>> {
+fn load_entries(conn: &Connection, month: i64, idx: &FundIndex) -> AppResult<Vec<E>> {
     let mut st = conn.prepare(
-        "SELECT e.id, e.program_id, e.program_group_id, e.student_id, ef.id, coalesce(ef.name, '미확정'), i.code, e.flow, e.entry_kind, e.amount
-           FROM ledger_entry e
-           LEFT JOIN fund_type f0 ON f0.id = e.fund_type_id
-           LEFT JOIN fund_type ef ON ef.id = coalesce(f0.merged_into_id, f0.id)
-           JOIN amount_item i ON i.id = e.amount_item_id
+        "SELECT e.id, e.program_id, e.program_group_id, e.student_id, e.fund_type_id, i.code, e.flow, e.entry_kind, e.amount
+           FROM ledger_entry e JOIN amount_item i ON i.id = e.amount_item_id
           WHERE e.fiscal_month_id = ?1 AND e.state = 'active' AND e.flow IN ('collection', 'expenditure')
           ORDER BY e.id",
     )?;
     let rows = st.query_map([month], |r| {
+        let raw: Option<i64> = r.get(4)?;
         Ok(E {
             id: r.get(0)?,
             program_id: r.get(1)?,
             group_id: r.get(2)?,
             student_id: r.get(3)?,
-            fund_id: r.get(4)?,
-            fund_name: r.get(5)?,
-            item_code: r.get(6)?,
-            flow: r.get(7)?,
-            kind: r.get(8)?,
-            amount: r.get(9)?,
+            fund: raw.map(|f| idx.effective(f)),
+            item_code: r.get(5)?,
+            flow: r.get(6)?,
+            kind: r.get(7)?,
+            amount: r.get(8)?,
         })
     })?;
     Ok(rows.collect::<Result<_, _>>()?)
@@ -139,24 +223,44 @@ enum Unit {
     Group(i64),
 }
 
+/// 재원별 금액 칸 키: Some(id) = 통합을 푼 재원, None = 미확정
+type FundKey = Option<i64>;
+
 #[derive(Default, Debug, Clone)]
 struct Cell {
     initial: i64,
     extra: i64,
     refund: i64,
     allocated_in: i64,
-    /// 재원 → (기준액 합, 지급액 합) — None 은 자료 없음
-    basis_by_fund: BTreeMap<String, i64>,
-    expense_by_fund: BTreeMap<String, i64>,
+    basis_by_fund: BTreeMap<FundKey, i64>,
+    expense_by_fund: BTreeMap<FundKey, i64>,
     basis_entries: BTreeSet<i64>,
     expense_entries: BTreeSet<i64>,
     alloc_ids: BTreeSet<i64>,
-    unmapped: bool,
     has_basis: bool,
     has_expense: bool,
 }
 
+impl Cell {
+    fn unmapped(&self) -> bool {
+        self.basis_by_fund.contains_key(&None) || self.expense_by_fund.contains_key(&None)
+    }
+    fn absorb(&mut self, o: &Cell) {
+        self.initial += o.initial;
+        self.extra += o.extra;
+        self.refund += o.refund;
+        self.allocated_in += o.allocated_in;
+        for (f, v) in &o.basis_by_fund {
+            *self.basis_by_fund.entry(*f).or_default() += v;
+        }
+        self.basis_entries.extend(o.basis_entries.iter());
+        self.alloc_ids.extend(o.alloc_ids.iter());
+        self.has_basis |= o.has_basis;
+    }
+}
+
 struct Computed {
+    idx: FundIndex,
     cells: BTreeMap<(Unit, &'static str), Cell>,
     unallocated_by_set: BTreeMap<&'static str, i64>,
     unallocated_total: i64,
@@ -168,9 +272,9 @@ struct Computed {
 }
 
 fn compute(conn: &Connection, month: i64) -> AppResult<Computed> {
-    let entries = load_entries(conn, month)?;
+    let idx = FundIndex::load(conn)?;
+    let entries = load_entries(conn, month, &idx)?;
     let allocs = load_allocations(conn, month)?;
-    // 그룹 구성
     let mut members: HashMap<i64, Vec<i64>> = HashMap::new();
     let mut st = conn.prepare("SELECT group_id, program_id FROM program_group_member ORDER BY group_id, program_id")?;
     for row in st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))? {
@@ -197,16 +301,12 @@ fn compute(conn: &Connection, month: i64) -> AppResult<Computed> {
                 _ => None,
             };
             match unit {
-                Some(u) => {
-                    let c = cells.entry((u, set)).or_default();
-                    add_basis(c, e, e.amount, false, None);
-                }
+                Some(u) => add_basis(cells.entry((u, set)).or_default(), e, e.amount, false, None),
                 None => {
                     let mut rest = e.amount;
                     if let Some(list) = allocs.get(&e.id) {
                         for (aid, pid, amt) in list {
-                            let c = cells.entry((Unit::Program(*pid), set)).or_default();
-                            add_basis(c, e, *amt, true, Some(*aid));
+                            add_basis(cells.entry((Unit::Program(*pid), set)).or_default(), e, *amt, true, Some(*aid));
                             rest -= amt;
                         }
                     }
@@ -226,49 +326,23 @@ fn compute(conn: &Connection, month: i64) -> AppResult<Computed> {
             let c = cells.entry((unit, set)).or_default();
             c.has_expense = true;
             c.expense_entries.insert(e.id);
-            *c.expense_by_fund.entry(e.fund_name.clone()).or_default() += e.amount;
-            if e.fund_id.is_none() {
-                c.unmapped = true;
-            }
+            *c.expense_by_fund.entry(e.fund).or_default() += e.amount;
         }
     }
-    // 그룹 단위의 기준액 = 구성 프로그램 기준액 합 (그룹에 지출이 있거나 그룹 기준 거래가 있을 때만 만든다)
+    // 그룹 기준액 = 구성 프로그램 기준액 합 (그룹 칸이 있을 때만; 대시보드 합계에 겹쳐 더하지 않는다)
     let group_units: Vec<(i64, &'static str)> = cells
         .keys()
         .filter_map(|(u, s)| if let Unit::Group(g) = u { Some((*g, *s)) } else { None })
         .collect();
     for (g, set) in group_units {
-        let member_ids = members.get(&g).cloned().unwrap_or_default();
         let mut merged = Cell::default();
-        for p in &member_ids {
-            if let Some(c) = cells.get(&(Unit::Program(*p), set)) {
-                merged.initial += c.initial;
-                merged.extra += c.extra;
-                merged.refund += c.refund;
-                merged.allocated_in += c.allocated_in;
-                for (f, v) in &c.basis_by_fund {
-                    *merged.basis_by_fund.entry(f.clone()).or_default() += v;
-                }
-                merged.basis_entries.extend(c.basis_entries.iter());
-                merged.alloc_ids.extend(c.alloc_ids.iter());
-                merged.has_basis |= c.has_basis;
-                merged.unmapped |= c.unmapped;
+        for p in members.get(&g).cloned().unwrap_or_default() {
+            if let Some(c) = cells.get(&(Unit::Program(p), set)) {
+                merged.absorb(c);
             }
         }
-        let gc = cells.get_mut(&(Unit::Group(g), set)).unwrap();
-        gc.initial += merged.initial;
-        gc.extra += merged.extra;
-        gc.refund += merged.refund;
-        gc.allocated_in += merged.allocated_in;
-        for (f, v) in merged.basis_by_fund {
-            *gc.basis_by_fund.entry(f).or_default() += v;
-        }
-        gc.basis_entries.extend(merged.basis_entries);
-        gc.alloc_ids.extend(merged.alloc_ids);
-        gc.has_basis |= merged.has_basis;
-        gc.unmapped |= merged.unmapped;
+        cells.get_mut(&(Unit::Group(g), set)).unwrap().absorb(&merged);
     }
-    // 이름
     let mut unit_names = HashMap::new();
     for (u, _) in cells.keys() {
         if unit_names.contains_key(u) {
@@ -280,12 +354,11 @@ fn compute(conn: &Connection, month: i64) -> AppResult<Computed> {
         };
         unit_names.insert(*u, name);
     }
-    Ok(Computed { cells, unallocated_by_set, unallocated_total, unlinked_students: unlinked, collection_total: coll, expenditure_total: exp, unit_names, members })
+    Ok(Computed { idx, cells, unallocated_by_set, unallocated_total, unlinked_students: unlinked, collection_total: coll, expenditure_total: exp, unit_names, members })
 }
 
 fn add_basis(c: &mut Cell, e: &E, amount: i64, via_alloc: bool, alloc_id: Option<i64>) {
     match e.kind.as_str() {
-        "initial_collect" => c.initial += amount,
         "extra_collect" => c.extra += amount,
         "refund" => c.refund += amount,
         _ => c.initial += amount,
@@ -298,79 +371,70 @@ fn add_basis(c: &mut Cell, e: &E, amount: i64, via_alloc: bool, alloc_id: Option
     if let Some(a) = alloc_id {
         c.alloc_ids.insert(a);
     }
-    *c.basis_by_fund.entry(e.fund_name.clone()).or_default() += amount;
-    if e.fund_id.is_none() {
-        c.unmapped = true;
+    *c.basis_by_fund.entry(e.fund).or_default() += amount;
+}
+
+// ── 재원별 줄 · 판정 ────────────────────────────────────────────────────
+
+fn line_state(k: FundKey, b: Option<i64>, e: Option<i64>) -> (Option<i64>, &'static str) {
+    match (k, b, e) {
+        (None, _, _) => (None, "unmapped"),
+        (_, Some(b), Some(e)) => (Some(b - e), if b == e { "ok" } else { "mismatch" }),
+        (_, Some(_), None) => (None, "no_expense"),
+        _ => (None, "no_basis"),
     }
 }
 
-fn judge(unit: Unit, set: &'static str, c: &Cell, cp: &Computed, group_paid: bool) -> (String, Vec<FundLine>, Vec<String>) {
-    let mut hints = Vec::new();
-    let mut funds: Vec<FundLine> = Vec::new();
-    let names: BTreeSet<&String> = c.basis_by_fund.keys().chain(c.expense_by_fund.keys()).collect();
-    for f in names {
-        let b = c.basis_by_fund.get(f).copied();
-        let e = c.expense_by_fund.get(f).copied();
-        let (diff, state) = match (b, e) {
-            (Some(b), Some(e)) => (Some(b - e), if b == e { "ok" } else { "mismatch" }),
-            (Some(_), None) => (None, "no_expense"),
-            (None, Some(_)) => (None, "no_basis"),
-            _ => (None, "no_basis"),
-        };
-        funds.push(FundLine { fund_name: f.clone(), basis: b, expense: e, diff, state: state.into() });
+/// 세부 보기 재원 줄. 미확정(None) 재원은 'unmapped' 로 따로 남긴다.
+fn fund_lines(idx: &FundIndex, c: &Cell) -> Vec<FundLine> {
+    let mut keys: Vec<FundKey> = c.basis_by_fund.keys().chain(c.expense_by_fund.keys()).copied().collect();
+    keys.sort();
+    keys.dedup();
+    keys.sort_by_key(|k| match k { Some(id) => (0, idx.sort_key(*id), *id), None => (1, 0, 0) });
+    keys.into_iter()
+        .map(|k| {
+            let b = c.basis_by_fund.get(&k).copied();
+            let e = c.expense_by_fund.get(&k).copied();
+            let (diff, state) = line_state(k, b, e);
+            FundLine {
+                fund_id: k,
+                fund_name: match k { Some(id) => idx.name(id), None => "미확정".into() },
+                root_id: k.map(|id| idx.root(id)),
+                basis: b,
+                expense: e,
+                diff,
+                state: state.into(),
+            }
+        })
+        .collect()
+}
+
+/// 수익자 통합 보기 — 상위 재원이 같은 줄을 합친다. 합계는 세부 보기와 같다.
+pub fn merge_lines(idx: &FundIndex, lines: &[FundLine]) -> Vec<FundLine> {
+    let mut out: BTreeMap<(i32, Option<i64>), FundLine> = BTreeMap::new();
+    for l in lines {
+        let root = l.root_id;
+        let key = (match root { Some(r) => idx.sort_key(r), None => i32::MAX }, root);
+        let entry = out.entry(key).or_insert_with(|| FundLine {
+            fund_id: root,
+            fund_name: match root { Some(r) => idx.merged_label(r), None => "미확정".into() },
+            root_id: root,
+            basis: None,
+            expense: None,
+            diff: None,
+            state: String::new(),
+        });
+        entry.basis = match (entry.basis, l.basis) { (None, None) => None, (a, b) => Some(a.unwrap_or(0) + b.unwrap_or(0)) };
+        entry.expense = match (entry.expense, l.expense) { (None, None) => None, (a, b) => Some(a.unwrap_or(0) + b.unwrap_or(0)) };
     }
-    if c.refund != 0 {
-        hints.push("환불 거래가 있습니다.".into());
-    }
-    if c.extra != 0 {
-        hints.push("추가징수 거래가 있습니다.".into());
-    }
-    if c.allocated_in != 0 {
-        hints.push("배분으로 귀속된 징수액이 포함되어 있습니다.".into());
-    }
-    for f in &funds {
-        if f.state == "no_basis" {
-            hints.push(format!("재원 '{}' 은(는) 지급 자료만 있어 대조 자료 없음.", f.fund_name));
-        } else if f.state == "no_expense" {
-            hints.push(format!("재원 '{}' 은(는) 징수 자료만 있어 대조 자료 없음.", f.fund_name));
-        }
-    }
-    if cp.unlinked_students > 0 {
-        hints.push(format!("이 달에 학생을 식별하지 못한 징수 거래 {}건이 있습니다.", cp.unlinked_students));
-    }
-    let status = if set == "admin" || set == "other" {
-        "unverifiable"
-    } else if group_paid {
-        hints.push("지급이 프로그램 그룹으로 묶여 있어 개별 프로그램 지급액은 확인되지 않습니다.".into());
-        "group_only"
-    } else if cp.unallocated_by_set.get(set).copied().unwrap_or(0) != 0 && matches!(unit, Unit::Program(_) | Unit::Group(_)) {
-        hints.push(format!(
-            "이 달의 {} 미배분 징수액 {} 이 남아 있어 프로그램별 기준액이 완전하지 않습니다.",
-            ITEM_SETS.iter().find(|(c, _)| *c == set).map(|x| x.1).unwrap_or(set),
-            crate::domain::money::format_won(cp.unallocated_by_set.get(set).copied().unwrap_or(0))
-        ));
-        "unallocated"
-    } else if c.unmapped {
-        hints.push("재원이 미확정인 거래가 섞여 있어 재원별 대조를 할 수 없습니다.".into());
-        "unmapped"
-    } else if !c.has_basis || !c.has_expense {
-        hints.push(if !c.has_basis { "징수 기준 자료가 없습니다 (0원으로 보지 않음)." } else { "지급 자료가 없습니다 (0원으로 보지 않음). 지급 자료 누락 가능성." }.into());
-        "missing"
-    } else {
-        let comparable: Vec<&FundLine> = funds.iter().filter(|f| f.diff.is_some()).collect();
-        if comparable.is_empty() {
-            hints.push("같은 재원에 징수와 지급이 함께 있는 경우가 없어 비교할 수 없습니다.".into());
-            "missing"
-        } else if comparable.iter().any(|f| f.diff != Some(0)) {
-            let per: Vec<String> = comparable.iter().filter(|f| f.diff != Some(0)).map(|f| format!("{} {}", f.fund_name, crate::domain::money::format_won(f.diff.unwrap_or(0)))).collect();
-            hints.push(format!("재원별 차액: {}", per.join(" / ")));
-            hints.push("원본 자료의 기준 시점 차이 가능성(9월 전환 등)을 함께 확인하세요.".into());
-            "mismatch"
-        } else {
-            "ok"
-        }
-    };
-    (status.into(), funds, hints)
+    out.into_values()
+        .map(|mut l| {
+            let (diff, state) = line_state(l.fund_id, l.basis, l.expense);
+            l.diff = diff;
+            l.state = state.into();
+            l
+        })
+        .collect()
 }
 
 fn fingerprint(c: &Cell, set: &str, unit: Unit) -> String {
@@ -379,6 +443,13 @@ fn fingerprint(c: &Cell, set: &str, unit: Unit) -> String {
         c.initial, c.extra, c.refund, c.allocated_in, c.basis_by_fund, c.expense_by_fund, c.basis_entries, c.alloc_ids
     );
     hash::sha256_hex(text.as_bytes())[..16].to_string()
+}
+
+fn unit_key(u: Unit) -> (&'static str, i64) {
+    match u {
+        Unit::Program(p) => ("program", p),
+        Unit::Group(g) => ("group", g),
+    }
 }
 
 fn latest_note(conn: &Connection, month: i64, unit: Unit, set: &str) -> AppResult<Option<ReconNote>> {
@@ -393,29 +464,107 @@ fn latest_note(conn: &Connection, month: i64, unit: Unit, set: &str) -> AppResul
         .optional()?)
 }
 
-fn unit_key(u: Unit) -> (&'static str, i64) {
-    match u {
-        Unit::Program(p) => ("program", p),
-        Unit::Group(g) => ("group", g),
-    }
+fn w(v: i64) -> String {
+    crate::domain::money::format_won(v)
 }
 
 fn build_row(conn: &Connection, month: i64, cp: &Computed, unit: Unit, set: &'static str, c: &Cell) -> AppResult<ReconRow> {
-    // 이 프로그램이 속한 그룹이 같은 항목에 지급을 가지고 있으면 개별 지급액은 미확정이다.
     let group_paid = match unit {
         Unit::Program(p) => cp.members.iter().any(|(g, ms)| ms.contains(&p) && cp.cells.get(&(Unit::Group(*g), set)).map(|gc| gc.has_expense).unwrap_or(false)),
         Unit::Group(_) => false,
     };
-    let (status, funds, hints) = judge(unit, set, c, cp, group_paid);
+    let funds = fund_lines(&cp.idx, c);
+    let funds_merged = merge_lines(&cp.idx, &funds);
+
+    // 금액 근거 — 전체 = 비교 가능 + 비교 제외 + 매핑 미확정 이 항상 성립한다.
     let basis: i64 = c.basis_by_fund.values().sum();
     let expense: i64 = c.expense_by_fund.values().sum();
-    // 차액은 양쪽 자료가 다 있는 재원끼리만 계산한다. 한쪽에만 있는 재원(맞춤형지원 등)은 제외하고 이름을 알린다.
-    let comparable_diff: i64 = funds.iter().filter_map(|f| f.diff).sum();
-    let uncompared: Vec<String> = funds.iter().filter(|f| f.diff.is_none()).map(|f| f.fund_name.clone()).collect();
-    let label = if matches!(status.as_str(), "ok" | "mismatch") && !uncompared.is_empty() {
-        format!("{} ({} 제외)", status_label(&status), uncompared.join("·"))
+    let comparable_basis: i64 = funds.iter().filter(|f| f.diff.is_some()).map(|f| f.basis.unwrap_or(0)).sum();
+    let comparable_expense: i64 = funds.iter().filter(|f| f.diff.is_some()).map(|f| f.expense.unwrap_or(0)).sum();
+    let unmapped_basis: i64 = c.basis_by_fund.get(&None).copied().unwrap_or(0);
+    let unmapped_expense: i64 = c.expense_by_fund.get(&None).copied().unwrap_or(0);
+    let excluded_basis: i64 = funds.iter().filter(|f| f.state == "no_expense").map(|f| f.basis.unwrap_or(0)).sum();
+    let excluded_expense: i64 = funds.iter().filter(|f| f.state == "no_basis").map(|f| f.expense.unwrap_or(0)).sum();
+    debug_assert_eq!(basis, comparable_basis + excluded_basis + unmapped_basis);
+    debug_assert_eq!(expense, comparable_expense + excluded_expense + unmapped_expense);
+    let simple_diff = basis - expense;
+    let comparable_diff = comparable_basis - comparable_expense;
+    let unallocated_in_set = cp.unallocated_by_set.get(set).copied().unwrap_or(0);
+
+    let mut hints = Vec::new();
+    let mut excluded: Vec<ExcludedFund> = Vec::new();
+    for f in &funds {
+        match f.state.as_str() {
+            "no_basis" => excluded.push(ExcludedFund { fund_name: f.fund_name.clone(), basis: 0, expense: f.expense.unwrap_or(0), reason: "징수 기준 자료 없음 (지급만 있음)".into() }),
+            "no_expense" => excluded.push(ExcludedFund { fund_name: f.fund_name.clone(), basis: f.basis.unwrap_or(0), expense: 0, reason: "지급 자료 없음 (징수만 있음)".into() }),
+            "unmapped" => excluded.push(ExcludedFund { fund_name: "미확정".into(), basis: f.basis.unwrap_or(0), expense: f.expense.unwrap_or(0), reason: "재원 매핑 미확정".into() }),
+            _ => {}
+        }
+    }
+    if c.refund != 0 {
+        hints.push("환불 거래가 있습니다.".into());
+    }
+    if c.extra != 0 {
+        hints.push("추가징수 거래가 있습니다.".into());
+    }
+    if c.allocated_in != 0 {
+        hints.push("배분으로 귀속된 징수액이 포함되어 있습니다.".into());
+    }
+    for x in &excluded {
+        if x.reason.starts_with("징수") {
+            hints.push(format!("재원 '{}' 지급 {} 은(는) 징수 기준 자료가 없어 비교에서 뺐습니다 (재원 성격이 아니라 근거 자료 부족 때문).", x.fund_name, w(x.expense)));
+        } else if x.reason.starts_with("지급") {
+            hints.push(format!("재원 '{}' 징수 {} 은(는) 지급 자료가 없어 비교에서 뺐습니다.", x.fund_name, w(x.basis)));
+        }
+    }
+    if cp.unlinked_students > 0 {
+        hints.push(format!("이 달에 학생을 식별하지 못한 징수 거래 {}건이 있습니다.", cp.unlinked_students));
+    }
+    let comparable: Vec<&FundLine> = funds.iter().filter(|f| f.diff.is_some()).collect();
+    let status = if set == "admin" || set == "other" {
+        "unverifiable"
+    } else if group_paid {
+        hints.push("지급이 프로그램 그룹으로 묶여 있어 개별 프로그램 지급액은 확인되지 않습니다.".into());
+        "group_only"
+    } else if unallocated_in_set != 0 {
+        hints.push(format!(
+            "이 달의 {} 미배분 징수액 {} 이 남아 있어 프로그램별 기준액이 완전하지 않습니다.",
+            ITEM_SETS.iter().find(|(x, _)| *x == set).map(|x| x.1).unwrap_or(set),
+            w(unallocated_in_set)
+        ));
+        "unallocated"
+    } else if c.unmapped() {
+        hints.push(format!("재원이 미확정인 거래(징수 {} · 지급 {})가 섞여 있어 재원별 대조를 할 수 없습니다.", w(unmapped_basis), w(unmapped_expense)));
+        "unmapped"
+    } else if !c.has_basis || !c.has_expense {
+        hints.push(if !c.has_basis { "징수 기준 자료가 없습니다 (0원으로 보지 않음)." } else { "지급 자료가 없습니다 (0원으로 보지 않음). 지급 자료 누락 가능성." }.into());
+        "missing"
+    } else if comparable.is_empty() {
+        hints.push("같은 재원에 징수와 지급이 함께 있는 경우가 없어 비교할 수 없습니다.".into());
+        "missing"
+    } else if comparable.iter().any(|f| f.diff != Some(0)) {
+        let per: Vec<String> = comparable.iter().filter(|f| f.diff != Some(0)).map(|f| format!("{} {}", f.fund_name, w(f.diff.unwrap_or(0)))).collect();
+        hints.push(format!("재원별 차액: {}", per.join(" / ")));
+        if comparable_diff == 0 {
+            hints.push("비교 가능한 재원의 총액은 같지만 재원별로 어긋납니다 — 재원 간 이동(과목경정) 확인 대상.".into());
+        }
+        if simple_diff != comparable_diff {
+            hints.push(format!("전체 단순 차액 {} 과 재원별 대조 차액 {} 이 다른 까닭: 비교 제외 징수 {} · 비교 제외 지급 {} · 미확정 징수 {} · 미확정 지급 {}.",
+                w(simple_diff), w(comparable_diff), w(excluded_basis), w(excluded_expense), w(unmapped_basis), w(unmapped_expense)));
+        }
+        hints.push("원본 자료의 기준 시점 차이 가능성(9월 전환 등)을 함께 확인하세요.".into());
+        "mismatch"
     } else {
-        status_label(&status).to_string()
+        "ok"
+    };
+    let total_match_fund_mismatch = status == "mismatch" && comparable_diff == 0;
+    let excluded_names: Vec<String> = funds.iter().filter(|f| f.state == "no_basis" || f.state == "no_expense").map(|f| f.fund_name.clone()).collect();
+    let label = if total_match_fund_mismatch {
+        "총액 일치 · 재원 불일치".to_string()
+    } else if matches!(status, "ok" | "mismatch") && !excluded_names.is_empty() {
+        format!("{} ({} 제외)", status_label(status), excluded_names.join("·"))
+    } else {
+        status_label(status).to_string()
     };
     let fp = fingerprint(c, set, unit);
     let note = latest_note(conn, month, unit, set)?;
@@ -436,11 +585,22 @@ fn build_row(conn: &Connection, month: i64, cp: &Computed, unit: Unit, set: &'st
         allocated_in: c.allocated_in,
         basis,
         expense,
+        simple_diff,
+        comparable_basis,
+        comparable_expense,
         diff: comparable_diff,
+        excluded_basis,
+        excluded_expense,
+        unmapped_basis,
+        unmapped_expense,
+        unallocated_in_set,
+        excluded,
+        total_match_fund_mismatch,
+        status: status.into(),
         status_label: label,
-        status,
         hints,
         funds,
+        funds_merged,
         note_label: note_label(&note_status).into(),
         note_status,
         needs_recheck,
@@ -455,20 +615,26 @@ pub fn month(conn: &Connection, fiscal_month_id: i64) -> AppResult<MonthRecon> {
         rows.push(build_row(conn, fiscal_month_id, &cp, *unit, set, c)?);
     }
     rows.sort_by(|a, b| status_rank(&a.status).cmp(&status_rank(&b.status)).then(a.unit_name.cmp(&b.unit_name)).then(a.item_set.cmp(&b.item_set)));
-    let comparable: Vec<&ReconRow> = rows.iter().filter(|r| matches!(r.status.as_str(), "ok" | "mismatch")).collect();
-    let comparable_basis = comparable.iter().flat_map(|r| r.funds.iter().filter(|f| f.diff.is_some()).map(|f| f.basis.unwrap_or(0))).sum();
-    let comparable_expense = comparable.iter().flat_map(|r| r.funds.iter().filter(|f| f.diff.is_some()).map(|f| f.expense.unwrap_or(0))).sum();
+    // 월 합계는 그룹과 구성 프로그램을 겹쳐 더하지 않는다: 그룹으로 검증되는 프로그램 칸은 뺀다.
+    let counted: Vec<&ReconRow> = rows.iter().filter(|r| r.status != "group_only").collect();
+    let comparable_basis = counted.iter().filter(|r| matches!(r.status.as_str(), "ok" | "mismatch")).map(|r| r.comparable_basis).sum();
+    let comparable_expense = counted.iter().filter(|r| matches!(r.status.as_str(), "ok" | "mismatch")).map(|r| r.comparable_expense).sum();
+    let excluded_basis = counted.iter().map(|r| if matches!(r.status.as_str(), "ok" | "mismatch") { r.excluded_basis + r.unmapped_basis } else { r.basis }).sum::<i64>() + cp.unallocated_total;
+    let excluded_expense = counted.iter().map(|r| if matches!(r.status.as_str(), "ok" | "mismatch") { r.excluded_expense + r.unmapped_expense } else { r.expense }).sum();
     let todo_count = rows.iter().filter(|r| matches!(r.status.as_str(), "mismatch" | "unallocated" | "unmapped") && r.note_status != "explained" || r.needs_recheck).count() as i64;
-    let mismatch_count = rows.iter().filter(|r| r.status == "mismatch").count() as i64;
     Ok(MonthRecon {
         fiscal_month_id,
         collection_total: cp.collection_total,
         expenditure_total: cp.expenditure_total,
+        simple_diff: cp.collection_total - cp.expenditure_total,
         comparable_basis,
         comparable_expense,
+        excluded_basis,
+        excluded_expense,
         unallocated_total: cp.unallocated_total,
         todo_count,
-        mismatch_count,
+        mismatch_count: rows.iter().filter(|r| r.status == "mismatch").count() as i64,
+        missing_count: rows.iter().filter(|r| r.status == "missing").count() as i64,
         rows,
     })
 }
@@ -535,7 +701,7 @@ fn trace_entry(conn: &Connection, entry_id: i64, attributed: i64, via_allocation
     conn.query_row(
         "SELECT e.id, e.entry_kind, coalesce(p.name, g.name || ' (그룹)', '미배분'),
                 CASE WHEN e.student_id IS NOT NULL THEN coalesce(s.grade, 0) || '학년 ' || coalesce(s.class_name, '') || '반 ' || coalesce(s.student_no, '') || '번 ' || coalesce(s.name, '') ELSE e.counterparty END,
-                coalesce(ef.name, '미확정'), coalesce(ur.fund_text, ''), i.name, e.amount, m.ym, e.processed_on, e.state,
+                coalesce(ef.name, '미확정'), coalesce(f0.name, ''), coalesce(ur.fund_text, ''), i.name, e.amount, m.ym, e.processed_on, e.state,
                 f.id, coalesce(f.file_name, ''), coalesce(f.version_no, 0), coalesce(f.status, ''), coalesce(sr.sheet_name, ''), coalesce(sr.row_no, 0), e.source_row_id
            FROM ledger_entry e
            LEFT JOIN program p ON p.id = e.program_id
@@ -552,7 +718,9 @@ fn trace_entry(conn: &Connection, entry_id: i64, attributed: i64, via_allocation
         [entry_id],
         |r| {
             let kind: String = r.get(1)?;
-            let ym: String = r.get(8)?;
+            let ym: String = r.get(9)?;
+            let stored_fund: String = r.get(5)?;
+            let fund_text: String = r.get(6)?;
             Ok(TraceEntry {
                 entry_id: r.get(0)?,
                 kind_label: kind_label(&kind).into(),
@@ -560,21 +728,22 @@ fn trace_entry(conn: &Connection, entry_id: i64, attributed: i64, via_allocation
                 program_name: r.get(2)?,
                 party: r.get(3)?,
                 fund_name: r.get(4)?,
-                fund_text: r.get(5)?,
-                item_name: r.get(6)?,
-                amount: r.get(7)?,
+                // 원본 재원명: 엑셀 표기가 있으면 그것, 없으면 저장된 재원 이름(통합 전)
+                fund_text: if fund_text.is_empty() { stored_fund } else { fund_text },
+                item_name: r.get(7)?,
+                amount: r.get(8)?,
                 attributed,
                 via_allocation,
                 month_label: format!("{} ({ym})", crate::domain::months::label(&ym)),
-                processed_on: r.get(9)?,
-                state: r.get(10)?,
-                file_id: r.get(11)?,
-                file_name: r.get(12)?,
-                version_no: r.get(13)?,
-                file_status: r.get(14)?,
-                sheet: r.get(15)?,
-                row_no: r.get(16)?,
-                source_row_id: r.get(17)?,
+                processed_on: r.get(10)?,
+                state: r.get(11)?,
+                file_id: r.get(12)?,
+                file_name: r.get(13)?,
+                version_no: r.get(14)?,
+                file_status: r.get(15)?,
+                sheet: r.get(16)?,
+                row_no: r.get(17)?,
+                source_row_id: r.get(18)?,
             })
         },
     )
@@ -593,7 +762,6 @@ pub fn detail(conn: &Connection, fiscal_month_id: i64, unit_kind: &str, unit_id:
     let c = cp.cells.get(&(unit, set)).unwrap_or(&empty);
     let row = build_row(conn, fiscal_month_id, &cp, unit, set, c)?;
     let allocs = load_allocations(conn, fiscal_month_id)?;
-    // 귀속 금액: 직접 거래는 전액, 배분 거래는 배분액
     let member_programs: BTreeSet<i64> = match unit {
         Unit::Program(p) => [p].into_iter().collect(),
         Unit::Group(g) => cp.members.get(&g).cloned().unwrap_or_default().into_iter().collect(),
@@ -620,9 +788,9 @@ pub fn detail(conn: &Connection, fiscal_month_id: i64, unit_kind: &str, unit_id:
     {
         let (kind, id) = unit_key(unit);
         let sql = if kind == "program" {
-            "SELECT e.id FROM ledger_entry e JOIN amount_item i ON i.id = e.amount_item_id WHERE e.fiscal_month_id = ?1 AND e.state <> 'active' AND e.program_id = ?2 ORDER BY e.id"
+            "SELECT e.id FROM ledger_entry e WHERE e.fiscal_month_id = ?1 AND e.state <> 'active' AND e.program_id = ?2 ORDER BY e.id"
         } else {
-            "SELECT e.id FROM ledger_entry e JOIN amount_item i ON i.id = e.amount_item_id WHERE e.fiscal_month_id = ?1 AND e.state <> 'active' AND e.program_group_id = ?2 ORDER BY e.id"
+            "SELECT e.id FROM ledger_entry e WHERE e.fiscal_month_id = ?1 AND e.state <> 'active' AND e.program_group_id = ?2 ORDER BY e.id"
         };
         let mut st = conn.prepare(sql)?;
         for r in st.query_map(params![fiscal_month_id, id], |r| r.get::<_, i64>(0))? {
@@ -630,10 +798,10 @@ pub fn detail(conn: &Connection, fiscal_month_id: i64, unit_kind: &str, unit_id:
         }
     }
     for id in voided_ids {
-        let t = trace_entry(conn, id, 0, false)?;
         if item_set_of(&item_code_of(conn, id)?) != set {
             continue;
         }
+        let t = trace_entry(conn, id, 0, false)?;
         if t.flow_is_collection() {
             collection.push(t);
         } else {
@@ -686,3 +854,7 @@ pub fn source_row(conn: &Connection, source_row_id: i64) -> AppResult<SourceRowV
 #[cfg(test)]
 #[path = "recon_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "recon_fund_tests.rs"]
+mod fund_tests;

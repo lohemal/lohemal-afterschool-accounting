@@ -12,6 +12,7 @@ export const STATUS_CLS: Record<ReconStatus, string> = {
 }
 
 export function StatusBadge({ row }: { row: ReconRow }) {
+  if (row.totalMatchFundMismatch) return <span className="badge badge--soon">🟡 총액 일치 / 재원 불일치</span>
   return <span className={STATUS_CLS[row.status]}>{row.statusLabel}</span>
 }
 
@@ -38,7 +39,8 @@ export function ReconTable({ rows, onOpen }: { rows: ReconRow[]; onOpen: (r: Rec
             <th className="num">환불</th>
             <th className="num">징수 기준액</th>
             <th className="num">지급액</th>
-            <th className="num">차액</th>
+            <th className="num" title="전체 징수 기준액 − 전체 지급액. 비교 범위가 다르면 오류가 아닙니다.">단순 차액</th>
+            <th className="num" title="양쪽 자료가 다 있는 재원끼리의 차액. 판정 기준.">대조 차액</th>
             <th className="center">검증</th>
             <th className="center">확인 상태</th>
             <th />
@@ -54,8 +56,10 @@ export function ReconTable({ rows, onOpen }: { rows: ReconRow[]; onOpen: (r: Rec
               <td className="num">{r.refund ? won(r.refund) : <span className="muted">—</span>}</td>
               <td className="num">{won(r.basis)}</td>
               <td className="num">{won(r.expense)}</td>
+              <td className="num muted">{diff(r.simpleDiff)}</td>
               <td className={`num ${r.status === 'ok' || r.status === 'mismatch' ? (r.diff > 0 ? 'diffcell--up' : r.diff < 0 ? 'diffcell--down' : '') : 'muted'}`}>
                 {r.status === 'ok' || r.status === 'mismatch' ? diff(r.diff) : '—'}
+                {(r.excludedBasis !== 0 || r.excludedExpense !== 0) && (r.status === 'ok' || r.status === 'mismatch') && <span className="muted" style={{ fontSize: 10, marginLeft: 4 }}>제외 {won(r.excludedBasis + r.excludedExpense)}</span>}
               </td>
               <td className="center">
                 <StatusBadge row={r} />

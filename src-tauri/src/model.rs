@@ -568,12 +568,26 @@ pub struct ManualPart {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct FundLine {
+    /// 통합을 푼 재원 id. None = 미확정
+    pub fund_id: Option<i64>,
     pub fund_name: String,
+    /// 통합 보기에서 묶이는 뿌리 재원 id (상위가 있으면 상위)
+    pub root_id: Option<i64>,
     pub basis: Option<i64>,
     pub expense: Option<i64>,
     pub diff: Option<i64>,
-    /// ok · mismatch · no_basis · no_expense
+    /// ok · mismatch · no_basis · no_expense · unmapped
     pub state: String,
+}
+
+/// 비교에서 뺀 재원과 그 까닭.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExcludedFund {
+    pub fund_name: String,
+    pub basis: i64,
+    pub expense: i64,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -588,14 +602,33 @@ pub struct ReconRow {
     pub extra: i64,
     pub refund: i64,
     pub allocated_in: i64,
+    /// 전체 징수 기준액 = 비교 가능 + 비교 제외 + 매핑 미확정
     pub basis: i64,
+    /// 전체 지급액 = 비교 가능 + 비교 제외 + 매핑 미확정
     pub expense: i64,
+    /// 전체 단순 차액 = basis − expense (참고 지표)
+    pub simple_diff: i64,
+    pub comparable_basis: i64,
+    pub comparable_expense: i64,
+    /// 재원별 대조 차액 = comparable_basis − comparable_expense (판정 기준)
     pub diff: i64,
+    pub excluded_basis: i64,
+    pub excluded_expense: i64,
+    pub unmapped_basis: i64,
+    pub unmapped_expense: i64,
+    /// 이 달·이 항목묶음의 미배분 징수액 (프로그램 공통)
+    pub unallocated_in_set: i64,
+    pub excluded: Vec<ExcludedFund>,
+    /// 비교 가능한 재원의 총액은 같은데 재원별로 어긋남 (총액 일치 · 재원 불일치)
+    pub total_match_fund_mismatch: bool,
     /// ok · mismatch · missing · unallocated · unmapped · unverifiable · group_only
     pub status: String,
     pub status_label: String,
     pub hints: Vec<String>,
+    /// 세부 재원 보기
     pub funds: Vec<FundLine>,
+    /// 수익자 통합 보기 (합계는 세부 보기와 같다)
+    pub funds_merged: Vec<FundLine>,
     pub note_status: String,
     pub note_label: String,
     pub needs_recheck: bool,
@@ -608,11 +641,16 @@ pub struct MonthRecon {
     pub fiscal_month_id: i64,
     pub collection_total: i64,
     pub expenditure_total: i64,
+    /// 전체 단순 차액 (참고)
+    pub simple_diff: i64,
     pub comparable_basis: i64,
     pub comparable_expense: i64,
+    pub excluded_basis: i64,
+    pub excluded_expense: i64,
     pub unallocated_total: i64,
     pub todo_count: i64,
     pub mismatch_count: i64,
+    pub missing_count: i64,
     pub rows: Vec<ReconRow>,
 }
 

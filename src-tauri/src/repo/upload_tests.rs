@@ -107,7 +107,7 @@ fn preview_matches_commit_exactly() {
     assert_eq!(p.summary.collection_total, 484_400);
     assert_eq!(p.summary.included_count, p.rows.iter().filter(|r| r.included).count() as i64);
     assert!(p.summary.by_fund.iter().any(|l| l.name == "방과후이용권" && l.total == 154_300), "{:?}", p.summary.by_fund);
-    assert!(p.summary.by_fund.iter().any(|l| l.name.starts_with("초3 수익자") && l.total == 5_000));
+    assert!(p.summary.by_fund.iter().any(|l| l.name.starts_with("초3 초과") && l.total == 5_000));
     assert!(p.summary.by_program.iter().any(|l| l.name == "미배분"));
     let r = t.commit(&req).unwrap();
     assert_eq!(r.collection_total, 484_400);

@@ -25,6 +25,7 @@ export function ReconDetailModal({ fiscalMonthId, row, onClose }: { fiscalMonthI
   const [noteStatus, setNoteStatus] = useState<string>(row.noteStatus === 'none' ? 'todo' : row.noteStatus)
   const [reason, setReason] = useState('')
   const [source, setSource] = useState<number | null>(null)
+  const [view, setView] = useState<'detail' | 'merged'>('detail')
   const [busy, setBusy] = useState(false)
   const d = q.data
 
@@ -50,17 +51,71 @@ export function ReconDetailModal({ fiscalMonthId, row, onClose }: { fiscalMonthI
         <>
           <div className="row">
             <div className="stat"><span>귀속월</span><strong style={{ fontFamily: 'inherit', fontSize: 13 }}>{d.monthLabel}</strong></div>
-            <div className="stat"><span>최초 징수</span><strong>{won(d.row.initial)}</strong></div>
-            <div className="stat"><span>추가징수</span><strong>{won(d.row.extra)}</strong></div>
-            <div className="stat"><span>환불</span><strong>{won(d.row.refund)}</strong></div>
-            <div className="stat"><span>징수 기준액</span><strong>{won(d.row.basis)}</strong></div>
-            <div className="stat"><span>지급액</span><strong>{won(d.row.expense)}</strong></div>
-            <div className={`stat ${d.row.status === 'mismatch' ? 'stat--bad' : ''}`}><span>차액 (기준액 − 지급액)</span><strong>{d.row.status === 'ok' || d.row.status === 'mismatch' ? diff(d.row.diff) : '—'}</strong></div>
             <div className="stat"><span>검증 · 확인</span><strong style={{ fontFamily: 'inherit' }}><StatusBadge row={d.row} /> <NoteBadge row={d.row} /></strong></div>
           </div>
           {d.members.length > 0 && <p className="muted" style={{ margin: '8px 0 0' }}>그룹 구성: {d.members.join(' + ')} — 그룹 전체로만 검증하며 개별 프로그램 지급액은 확인되지 않습니다.</p>}
 
-          <h3 className="card__title" style={{ marginTop: 14 }}>재원별 대조</h3>
+          <h3 className="card__title" style={{ marginTop: 14 }}>계산 근거</h3>
+          <div className="grid" style={{ gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10 }}>
+            <div className="tableWrap">
+              <table className="table">
+                <thead><tr><th colSpan={2}>전체 금액 (참고)</th></tr></thead>
+                <tbody>
+                  <tr><td>최초 징수 / 추가징수 / 환불</td><td className="num">{won(d.row.initial)} / {won(d.row.extra)} / {won(d.row.refund)}</td></tr>
+                  <tr><td>전체 징수 기준액</td><td className="num">{won(d.row.basis)}</td></tr>
+                  <tr><td>전체 지급액</td><td className="num">{won(d.row.expense)}</td></tr>
+                  <tr><td><strong>전체 단순 차액</strong></td><td className="num"><strong>{diff(d.row.simpleDiff)}</strong></td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div className="tableWrap">
+              <table className="table">
+                <thead><tr><th colSpan={2}>실제 대조 (양쪽 자료가 다 있는 재원)</th></tr></thead>
+                <tbody>
+                  <tr><td>비교 가능한 징수액</td><td className="num">{won(d.row.comparableBasis)}</td></tr>
+                  <tr><td>비교 가능한 지급액</td><td className="num">{won(d.row.comparableExpense)}</td></tr>
+                  <tr className={d.row.status === 'mismatch' ? 'row--error' : ''}><td><strong>재원별 대조 차액</strong></td><td className="num"><strong>{d.row.status === 'ok' || d.row.status === 'mismatch' ? diff(d.row.diff) : '—'}</strong></td></tr>
+                  <tr><td className="muted">판정은 이 차액으로만 합니다</td><td className="num"><StatusBadge row={d.row} /></td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div className="tableWrap">
+              <table className="table">
+                <thead><tr><th colSpan={2}>비교 제외 · 미확정</th></tr></thead>
+                <tbody>
+                  <tr><td>비교 제외 징수액</td><td className="num">{won(d.row.excludedBasis)}</td></tr>
+                  <tr><td>비교 제외 지급액</td><td className="num">{won(d.row.excludedExpense)}</td></tr>
+                  <tr><td>매핑 미확정 (징수 / 지급)</td><td className="num">{won(d.row.unmappedBasis)} / {won(d.row.unmappedExpense)}</td></tr>
+                  <tr><td>이 달 미배분 징수액 (같은 항목)</td><td className="num">{won(d.row.unallocatedInSet)}</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          {d.row.excluded.length > 0 && (
+            <div className="tableWrap" style={{ marginTop: 8 }}>
+              <table className="table">
+                <thead><tr><th>비교 제외 재원</th><th className="num">징수</th><th className="num">지급</th><th>사유</th></tr></thead>
+                <tbody>
+                  {d.row.excluded.map((x, i) => (
+                    <tr key={i}><td>{x.fundName}</td><td className="num">{won(x.basis)}</td><td className="num">{won(x.expense)}</td><td className="wrap">{x.reason} — 재원의 성격 때문이 아니라 비교할 근거 자료가 없기 때문입니다. 대응 자료가 생기면 이 재원도 대조됩니다.</td></tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <p className="muted" style={{ margin: '6px 0 0', fontSize: 12 }}>
+            전체 징수 기준액 = 비교 가능 {won(d.row.comparableBasis)} + 비교 제외 {won(d.row.excludedBasis)} + 미확정 {won(d.row.unmappedBasis)} · 전체 지급액 = 비교 가능 {won(d.row.comparableExpense)} + 비교 제외 {won(d.row.excludedExpense)} + 미확정 {won(d.row.unmappedExpense)}
+          </p>
+
+          <h3 className="card__title" style={{ marginTop: 14 }}>
+            재원별 대조
+            <span style={{ marginLeft: 'auto', fontWeight: 400 }}>
+              <select className="select input--sm" value={view} onChange={(e) => setView(e.target.value as 'detail' | 'merged')}>
+                <option value="detail">세부 재원 보기 (일반 수익자 · 초3 초과금 따로)</option>
+                <option value="merged">수익자 통합 보기 (초3 초과금 포함)</option>
+              </select>
+            </span>
+          </h3>
           <div className="tableWrap">
             <table className="table">
               <thead>
@@ -69,22 +124,30 @@ export function ReconDetailModal({ fiscalMonthId, row, onClose }: { fiscalMonthI
                   <th className="num">징수 기준액</th>
                   <th className="num">지급액</th>
                   <th className="num">차액</th>
-                  <th>판정</th>
+                  <th>상태</th>
                 </tr>
               </thead>
               <tbody>
-                {d.row.funds.map((f) => (
-                  <tr key={f.fundName} className={f.state === 'mismatch' ? 'row--error' : ''}>
+                {(view === 'detail' ? d.row.funds : d.row.fundsMerged).map((f) => (
+                  <tr key={f.fundName} className={f.state === 'mismatch' ? 'row--error' : f.state === 'unmapped' ? 'row--check' : ''}>
                     <td>{f.fundName}</td>
                     <td className="num">{f.basis === null ? <span className="muted">자료 없음</span> : won(f.basis)}</td>
                     <td className="num">{f.expense === null ? <span className="muted">자료 없음</span> : won(f.expense)}</td>
                     <td className="num">{f.diff === null ? '—' : diff(f.diff)}</td>
-                    <td>{f.state === 'ok' ? '일치' : f.state === 'mismatch' ? '불일치' : f.state === 'no_basis' ? '대조 자료 없음 (지급만)' : '대조 자료 없음 (징수만)'}</td>
+                    <td>{f.state === 'ok' ? '일치' : f.state === 'mismatch' ? '불일치' : f.state === 'no_basis' ? '대조 자료 없음 (지급만) · 비교 제외' : f.state === 'no_expense' ? '대조 자료 없음 (징수만) · 비교 제외' : '재원 매핑 미확정'}</td>
                   </tr>
                 ))}
+                <tr>
+                  <td><strong>합계</strong></td>
+                  <td className="num"><strong>{won(d.row.basis)}</strong></td>
+                  <td className="num"><strong>{won(d.row.expense)}</strong></td>
+                  <td className="num muted">{diff(d.row.simpleDiff)} (단순)</td>
+                  <td className="muted">세부·통합 보기의 합계는 같습니다. 초3 초과금은 통합 보기에서 수익자에 한 번만 더합니다.</td>
+                </tr>
               </tbody>
             </table>
           </div>
+          {d.row.totalMatchFundMismatch && <div className="notice notice--soon" style={{ marginTop: 8 }}>🟡 <strong>총액 일치 · 재원 불일치</strong> — 비교 가능한 재원의 총액은 같지만 재원별로 어긋납니다. 정상으로 처리하지 않습니다 (재원 간 이동 확인 대상).</div>}
 
           {d.row.hints.length > 0 && (
             <div className="notice" style={{ display: 'block', marginTop: 10 }}>
