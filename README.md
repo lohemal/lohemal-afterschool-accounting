@@ -10,11 +10,11 @@ Windows 로컬 데스크톱 프로그램입니다. 모든 차액을 자동으로
 
 ## 현재 단계
 
-**P7-1.2 — 세부반 → 통합 프로그램 매핑 + 월 확정 보호 보강(스키마 v10, 앱 0.1.0 유지, 로컬 커밋만).** 규칙·실제 자료 검증은 [docs/08-P7-1.1-프로그램-매핑.md](docs/08-P7-1.1-프로그램-매핑.md). v0.1.0 배포 기록은 [docs/07-P6-배포준비.md](docs/07-P6-배포준비.md) 10장(저장소 [lohemal/lohemal-afterschool-accounting](https://github.com/lohemal/lohemal-afterschool-accounting)), 운영 규칙은 [docs/06-P5-운영.md](docs/06-P5-운영.md), 자유수강권 규칙은 [docs/05-P4-자유수강권.md](docs/05-P4-자유수강권.md) (10장이 P4.1).
+**v0.1.1 배포 완료(2026-10-13) — 세부반 → 통합 프로그램 매핑 · 월 확정 보호 보강(스키마 v10).** Release [v0.1.1](https://github.com/lohemal/lohemal-afterschool-accounting/releases/tag/v0.1.1), v0.1.0 → v0.1.1 자동 업데이트 실측·자료 보존 검증은 [docs/07-P6-배포준비.md](docs/07-P6-배포준비.md) 11장, 매핑 규칙은 [docs/08-P7-1.1-프로그램-매핑.md](docs/08-P7-1.1-프로그램-매핑.md), 운영 규칙은 [docs/06-P5-운영.md](docs/06-P5-운영.md), 자유수강권 규칙은 [docs/05-P4-자유수강권.md](docs/05-P4-자유수강권.md) (10장이 P4.1).
 정정 규칙은 [docs/04-P3-회계-정정.md](docs/04-P3-회계-정정.md), 설계와 DB 구조는 [docs/01-P0-설계.md](docs/01-P0-설계.md),
 업로드·되돌리기 규칙은 [docs/02-P1-업로드와-되돌리기.md](docs/02-P1-업로드와-되돌리기.md),
 배분·대조 규칙과 실제 9월 검증 결과는 [docs/03-P2-대조와-배분.md](docs/03-P2-대조와-배분.md) 를 보세요.
-외부 배포(push·태그·Release)는 사용자 승인 후 진행합니다. 자동 업데이트 실측(P7-2)은 아직 하지 않았습니다.
+외부 배포(push·태그·Release)는 사용자 승인 후 진행합니다.
 
 ## 실행·검사
 
