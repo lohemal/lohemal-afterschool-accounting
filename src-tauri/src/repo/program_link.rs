@@ -17,7 +17,7 @@ use crate::domain::money::format_won as w;
 use crate::domain::program_link::split_class_suffix;
 use crate::error::{AppError, AppResult};
 use crate::model::*;
-use crate::repo::{audit, program, year};
+use crate::repo::{audit, program};
 
 /// 확정된 연결: 세부반 id → 통합 프로그램 id
 pub fn links(conn: &Connection, school_year_id: i64) -> AppResult<HashMap<i64, i64>> {

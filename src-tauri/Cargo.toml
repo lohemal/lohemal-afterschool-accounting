@@ -1,6 +1,6 @@
 [package]
 name = "asaccounting"
-version = "0.1.0"
+version = "0.1.1"
 description = "방과후 회계 검증 매니저"
 authors = ["lohemal"]
 edition = "2021"

@@ -23,3 +23,7 @@ pub(crate) mod testutil;
 #[cfg(test)]
 #[path = "real_tests.rs"]
 mod real_tests;
+
+#[cfg(test)]
+#[path = "fixture_v9_tests.rs"]
+mod fixture_v9_tests;
